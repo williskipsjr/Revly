@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://razorpay-buildathon.local/schemas/payment_event.schema.json",
+  "title": "PaymentEvent",
+  "description": "Normalized internal representation of a revenue-at-risk event. Ingestion is idempotent on external_event_id to absorb at-least-once webhook redelivery.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "external_event_id",
+    "merchant_id",
+    "payment_id",
+    "event_type",
+    "amount",
+    "currency",
+    "method",
+    "occurred_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "0.1.0" },
+    "external_event_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Provider event id. UNIQUE; the idempotency key for ingestion."
+    },
+    "merchant_id": { "type": "string", "minLength": 1 },
+    "payment_id": { "type": "string", "minLength": 1 },
+    "customer_id": { "type": ["string", "null"] },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "payment.failed",
+        "payment.authorized_pending",
+        "checkout.abandoned",
+        "subscription.charge_failed",
+        "invoice.overdue",
+        "mandate.failed"
+      ]
+    },
+    "amount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Amount in minor units (paise)."
+    },
+    "currency": { "type": "string", "enum": ["INR"] },
+    "method": {
+      "type": "string",
+      "enum": ["card", "upi", "netbanking", "wallet", "emi", "other"]
+    },
+    "failure_reason": {
+      "type": ["string", "null"],
+      "description": "Gateway/bank failure code or text, if provided."
+    },
+    "prior_attempts": { "type": "integer", "minimum": 0, "default": 0 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "received_at": { "type": ["string", "null"], "format": "date-time" },
+    "raw_payload": {
+      "type": ["object", "null"],
+      "description": "Original provider payload, retained for audit."
+    }
+  }
+}

@@ -1,0 +1,33 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+.next/
+
+# Go
+bin/
+*.exe
+
+# IDE
+.vscode/settings.json
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+
+# Local data
+data/
+
+PS and Solution/

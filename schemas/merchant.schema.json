@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://razorpay-buildathon.local/schemas/merchant.schema.json",
+  "title": "Merchant",
+  "description": "A merchant and its recovery policy/cost configuration. Two merchants with an identical failed payment can rationally choose different actions because cost and friction weights are merchant-configured.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "merchant_id",
+    "name",
+    "risk_tolerance_tier",
+    "policy_config",
+    "action_costs"
+  ],
+  "properties": {
+    "schema_version": { "const": "0.1.0" },
+    "merchant_id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "risk_tolerance_tier": {
+      "type": "string",
+      "enum": ["conservative", "balanced", "aggressive"]
+    },
+    "policy_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Merchant overrides, always bounded by platform ceilings at resolution time.",
+      "required": [
+        "max_retries",
+        "cooldown_minutes",
+        "min_erv_threshold",
+        "daily_action_cap",
+        "amount_ceiling"
+      ],
+      "properties": {
+        "max_retries": { "type": "integer", "minimum": 0 },
+        "cooldown_minutes": { "type": "integer", "minimum": 0 },
+        "min_erv_threshold": {
+          "type": "number",
+          "description": "ERV must exceed this (minor units) or the action becomes no_action."
+        },
+        "daily_action_cap": { "type": "integer", "minimum": 0 },
+        "amount_ceiling": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minor units. Above this, require escalation instead of automated retry."
+        },
+        "confidence_floor_override": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Merchants may raise, but the platform confidence floor is a safety floor that cannot be lowered."
+        }
+      }
+    },
+    "action_costs": {
+      "type": "array",
+      "description": "Per-action monetary cost and friction weight for this merchant.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action_type", "monetary_cost", "friction_weight"],
+        "properties": {
+          "action_type": { "$ref": "#/$defs/action" },
+          "monetary_cost": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Minor units (paise)."
+          },
+          "friction_weight": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Multiplier applied to a fixed per-action friction score."
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "retry",
+        "delayed_retry",
+        "alt_method",
+        "payment_link",
+        "notify",
+        "escalate",
+        "no_action"
+      ]
+    }
+  }
+}

@@ -1,0 +1,5 @@
+.git
+*.log
+bin/
+decision-engine
+README.md

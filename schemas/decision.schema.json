@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://razorpay-buildathon.local/schemas/decision.schema.json",
+  "title": "Decision",
+  "description": "Immutable, fully reconstructable record of a recovery decision: which action was chosen, its ERV term breakdown, the policy verdict, and the current recovery-state-machine state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "payment_event_id",
+    "merchant_id",
+    "chosen_action",
+    "policy_check_result",
+    "recovery_state",
+    "policy_version"
+  ],
+  "properties": {
+    "schema_version": { "const": "0.1.0" },
+    "decision_id": { "type": ["string", "null"] },
+    "payment_event_id": { "type": "string" },
+    "merchant_id": { "type": "string" },
+    "chosen_action": { "$ref": "#/$defs/action" },
+    "erv_at_decision": { "type": ["number", "null"] },
+    "policy_version": { "type": "string" },
+    "policy_check_result": {
+      "type": "string",
+      "enum": ["ALLOW", "BLOCK", "HUMAN_REVIEW"]
+    },
+    "recovery_state": {
+      "type": "string",
+      "enum": [
+        "FAILED",
+        "DIAGNOSED",
+        "RECOVERY_ELIGIBLE",
+        "ACTION_SELECTED",
+        "ACTION_PENDING",
+        "RECOVERED",
+        "RE_EVALUATE",
+        "STOPPED",
+        "DONE"
+      ]
+    },
+    "candidates": {
+      "type": "array",
+      "description": "Per-candidate ERV breakdown, ranked. The chosen action is the highest surviving ERV after policy.",
+      "items": { "$ref": "#/$defs/ervCandidate" }
+    },
+    "policy_checks": {
+      "type": "array",
+      "description": "Which policy constraints passed/failed for the chosen candidate.",
+      "items": { "type": "object" }
+    },
+    "decided_at": { "type": ["string", "null"], "format": "date-time" }
+  },
+  "$defs": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "retry",
+        "delayed_retry",
+        "alt_method",
+        "payment_link",
+        "notify",
+        "escalate",
+        "no_action"
+      ]
+    },
+    "ervCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "p_success",
+        "recoverable_amount",
+        "cost",
+        "friction_penalty",
+        "erv"
+      ],
+      "properties": {
+        "action": { "$ref": "#/$defs/action" },
+        "p_success": { "type": "number", "minimum": 0, "maximum": 1 },
+        "recoverable_amount": { "type": "integer", "minimum": 0 },
+        "cost": { "type": "number", "minimum": 0 },
+        "friction_penalty": { "type": "number", "minimum": 0 },
+        "erv": {
+          "type": "number",
+          "description": "P(success)*recoverable_amount - cost - friction_penalty. May be negative."
+        },
+        "policy_result": {
+          "type": ["string", "null"],
+          "enum": ["ALLOW", "BLOCK", "HUMAN_REVIEW", null]
+        }
+      }
+    }
+  }
+}
