@@ -2,12 +2,20 @@ package ingest
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 )
+
+// processTimeout bounds the synchronous Phase 2 recovery pipeline run after a newly-ingested
+// event. The pipeline runs on a context detached from the request (a client disconnect must
+// not abort a half-written decision), but still time-bounded so a stuck run can't wedge the
+// handler.
+const processTimeout = 15 * time.Second
 
 // maxBodyBytes bounds the inbound webhook body (defensive; a payment event is small).
 const maxBodyBytes = 1 << 20 // 1 MiB
@@ -36,7 +44,13 @@ type errorResponse struct {
 //
 // When secret is empty, signature verification is skipped (dev convenience). Callers
 // should log that fact once at startup so it is never silent in a real deployment.
-func NewHandler(ingestor Ingestor, secret string, logger *slog.Logger) http.HandlerFunc {
+//
+// processor, when non-nil, runs the Phase 2 recovery pipeline synchronously after a newly
+// created ingestion. Its failure never changes the ingestion response: the event is durably
+// persisted (the Phase 1 contract), so a pipeline error is logged and the event can be
+// reprocessed, rather than reporting the accepted webhook as failed. A nil processor
+// preserves pure Phase 1 behavior.
+func NewHandler(ingestor Ingestor, processor Processor, secret string, logger *slog.Logger) http.HandlerFunc {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -101,6 +115,24 @@ func NewHandler(ingestor Ingestor, secret string, logger *slog.Logger) http.Hand
 			)
 			writeError(w, http.StatusInternalServerError, "internal_error", "")
 			return
+		}
+
+		// Phase 2: run the recovery pipeline for a newly-created event, before responding.
+		// Duplicate deliveries (res.Created == false) are never reprocessed — the Phase 1
+		// idempotency boundary is also the "process exactly one recovery per event" boundary.
+		if processor != nil && res.Created {
+			pctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), processTimeout)
+			if err := processor.Process(pctx, res.PaymentEventID); err != nil {
+				// Ingestion already succeeded and is durable; a pipeline error must not turn the
+				// accepted webhook into a failure. Log for correlation and let it be reprocessed.
+				logger.Error("recovery pipeline failed after ingestion",
+					"merchant_id", merchantID,
+					"payment_event_id", res.PaymentEventID,
+					"external_event_id", evt.ExternalEventID,
+					"err", err,
+				)
+			}
+			cancel()
 		}
 
 		status := http.StatusOK

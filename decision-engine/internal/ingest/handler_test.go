@@ -55,7 +55,7 @@ const path = "/v1/merchants/merch_1/events/payment-failed"
 func serve(t *testing.T, ing Ingestor, secret string, req *http.Request) *httptest.ResponseRecorder {
 	t.Helper()
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/merchants/{id}/events/payment-failed", NewHandler(ing, secret, nil))
+	mux.HandleFunc("POST /v1/merchants/{id}/events/payment-failed", NewHandler(ing, nil, secret, nil))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	return rec

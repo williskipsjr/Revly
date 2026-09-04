@@ -49,3 +49,12 @@ type IngestResult struct {
 type Ingestor interface {
 	Ingest(ctx context.Context, req IngestRequest) (IngestResult, error)
 }
+
+// Processor runs the downstream recovery pipeline for a newly-ingested payment event
+// (Phase 2). It is implemented by internal/pipeline.Runner and invoked by the handler only
+// when ingestion created a new event — a duplicate delivery (Phase 1 idempotency) triggers
+// no reprocessing. A nil Processor keeps the Phase 1 behavior (ingest only), so the
+// ingestion layer has no hard dependency on the decision plane.
+type Processor interface {
+	Process(ctx context.Context, paymentEventID string) error
+}

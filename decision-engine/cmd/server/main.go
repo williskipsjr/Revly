@@ -20,7 +20,9 @@ import (
 
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/config"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/db"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/executor"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/ingest"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/pipeline"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/store"
 )
 
@@ -47,10 +49,14 @@ func main() {
 	mux.HandleFunc("GET /version", versionHandler(cfg))
 
 	if database != nil {
-		ingestor := store.New(database)
+		st := store.New(database)
+		// Phase 2: the recovery pipeline runs the full decision/execution slice for each newly
+		// ingested event. External action calls are mocked (executor.MockDispatcher); Postgres
+		// is the only durable store — no Redis dependency (PLAN.md §15).
+		runner := pipeline.NewRunner(st, executor.MockDispatcher{}, logger)
 		mux.HandleFunc(
 			"POST /v1/merchants/{id}/events/payment-failed",
-			ingest.NewHandler(ingestor, cfg.WebhookSecret, logger),
+			ingest.NewHandler(st, runner, cfg.WebhookSecret, logger),
 		)
 		if cfg.WebhookSecret == "" {
 			slog.Warn("webhook signature verification DISABLED: WEBHOOK_SECRET not set")
