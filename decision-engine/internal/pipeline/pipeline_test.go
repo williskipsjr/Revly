@@ -3,9 +3,12 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/domain"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/successmodel"
 )
 
 // fakeRepo records what the pipeline persisted, so orchestration can be asserted without a
@@ -63,7 +66,7 @@ func lastState(h []domain.RecoveryState) domain.RecoveryState { return h[len(h)-
 // action, dispatches it, and reaches DONE via ACTION_SELECTED→ACTION_PENDING→RECOVERED→DONE.
 func TestProcess_HappyPath(t *testing.T) {
 	repo := &fakeRepo{ctx: baseContext(), execCreated: true}
-	r := NewRunner(repo, nil, nil) // nil dispatcher → MockDispatcher
+	r := NewRunner(repo, nil, nil, nil) // nil dispatcher → MockDispatcher
 
 	if err := r.Process(context.Background(), "pe_1"); err != nil {
 		t.Fatalf("Process errored: %v", err)
@@ -104,7 +107,7 @@ func TestProcess_KillSwitch(t *testing.T) {
 	c := baseContext()
 	c.Policy.KillSwitch = true
 	repo := &fakeRepo{ctx: c}
-	r := NewRunner(repo, nil, nil)
+	r := NewRunner(repo, nil, nil, nil)
 
 	if err := r.Process(context.Background(), "pe_1"); err != nil {
 		t.Fatalf("Process errored: %v", err)
@@ -135,7 +138,7 @@ func TestProcess_BelowMinERV(t *testing.T) {
 	c.Amount = 100                 // tiny amount → tiny P*amount
 	c.Policy.MinERVThreshold = 1e9 // impossibly high floor
 	repo := &fakeRepo{ctx: c}
-	r := NewRunner(repo, nil, nil)
+	r := NewRunner(repo, nil, nil, nil)
 
 	if err := r.Process(context.Background(), "pe_1"); err != nil {
 		t.Fatalf("Process errored: %v", err)
@@ -162,7 +165,7 @@ func TestProcess_MaxRetriesBlocksRetry(t *testing.T) {
 	c.PriorAttempts = 2
 	c.RetryActionsTaken = 1 // effective attempts = 3 == MaxRetries → retries blocked
 	repo := &fakeRepo{ctx: c, execCreated: true}
-	r := NewRunner(repo, nil, nil)
+	r := NewRunner(repo, nil, nil, nil)
 
 	if err := r.Process(context.Background(), "pe_1"); err != nil {
 		t.Fatalf("Process errored: %v", err)
@@ -181,12 +184,66 @@ func TestProcess_MaxRetriesBlocksRetry(t *testing.T) {
 // TestProcess_LoadError: a context-load failure surfaces as an error and persists nothing.
 func TestProcess_LoadError(t *testing.T) {
 	repo := &fakeRepo{loadErr: context.DeadlineExceeded}
-	r := NewRunner(repo, nil, nil)
+	r := NewRunner(repo, nil, nil, nil)
 	if err := r.Process(context.Background(), "pe_1"); err == nil {
 		t.Fatal("expected an error when LoadContext fails")
 	}
 	if repo.decision != nil || repo.execution != nil {
 		t.Fatal("nothing should be persisted when load fails")
+	}
+}
+
+// expiredCardContext is a healthy merchant with an expired-card failure, whose diagnosis
+// (expired_method) yields alt_method and payment_link as competing candidates — the pair on
+// which the trained model and the Phase-2 heuristic disagree.
+func expiredCardContext() Context {
+	c := baseContext()
+	c.FailureReason = "Card expired"
+	c.Amount = 250000
+	c.ActionCosts[domain.ActionAltMethod] = ActionCost{MonetaryCost: 20, FrictionWeight: 0.8}
+	c.ActionCosts[domain.ActionPaymentLink] = ActionCost{MonetaryCost: 20, FrictionWeight: 0.8}
+	return c
+}
+
+func loadTrainedModel(t *testing.T) successmodel.Scorer {
+	t.Helper()
+	_, thisFile, _, _ := runtime.Caller(0)
+	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
+	m, err := successmodel.LoadModel(filepath.Join(root, "ml", "artifacts", "success_model.json"))
+	if err != nil {
+		t.Fatalf("load trained model: %v (run `python -m ml.train_success_model`)", err)
+	}
+	return m
+}
+
+// TestProcess_ModelChangesChosenAction is the Phase 3 headline proof: on the identical event,
+// the statistical model selects a different action than the Phase-2 heuristic. For an
+// expired-card failure the heuristic picks alt_method (it guessed alt_method > payment_link),
+// while the trained model picks payment_link (the synthetic data says payment_link recovers
+// more). Same diagnosis, same merchant economics — only the P(success) source differs.
+func TestProcess_ModelChangesChosenAction(t *testing.T) {
+	heuristicRepo := &fakeRepo{ctx: expiredCardContext(), execCreated: true}
+	if err := NewRunner(heuristicRepo, nil, successmodel.HeuristicScorer{}, nil).Process(context.Background(), "pe_1"); err != nil {
+		t.Fatalf("heuristic run: %v", err)
+	}
+
+	modelRepo := &fakeRepo{ctx: expiredCardContext(), execCreated: true}
+	if err := NewRunner(modelRepo, nil, loadTrainedModel(t), nil).Process(context.Background(), "pe_1"); err != nil {
+		t.Fatalf("model run: %v", err)
+	}
+
+	if heuristicRepo.decision.ChosenAction != domain.ActionAltMethod {
+		t.Fatalf("heuristic chose %s, expected alt_method", heuristicRepo.decision.ChosenAction)
+	}
+	if modelRepo.decision.ChosenAction != domain.ActionPaymentLink {
+		t.Fatalf("model chose %s, expected payment_link", modelRepo.decision.ChosenAction)
+	}
+	if heuristicRepo.decision.ChosenAction == modelRepo.decision.ChosenAction {
+		t.Fatal("the statistical model did not change the chosen action")
+	}
+	// The persisted model provenance must reflect the statistical model, not the heuristic.
+	if modelRepo.decision.SuccessModelVersion == successmodel.ModelVersion {
+		t.Fatalf("model run recorded heuristic version %q", modelRepo.decision.SuccessModelVersion)
 	}
 }
 

@@ -45,8 +45,13 @@ services:
       DIAGNOSIS_SERVICE_URL: ${DIAGNOSIS_SERVICE_URL:-http://diagnosis-service:8000}
       # Empty = webhook signature verification disabled (dev only; logged at startup).
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      # Phase 3: the trained P(success) logistic-regression artifact, mounted read-only below.
+      # If absent/unreadable the engine falls back to the Phase-2 heuristic (logged at startup).
+      SUCCESS_MODEL_PATH: ${SUCCESS_MODEL_PATH:-/etc/decision-engine/success_model.json}
     ports:
       - "8080:8080"
+    volumes:
+      - ./ml/artifacts/success_model.json:/etc/decision-engine/success_model.json:ro
     depends_on:
       postgres:
         condition: service_healthy

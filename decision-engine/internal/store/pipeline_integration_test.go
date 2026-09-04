@@ -14,6 +14,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -22,7 +24,87 @@ import (
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/executor"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/ingest"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/pipeline"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/successmodel"
 )
+
+// loadTrainedScorer loads the committed P(success) artifact for the end-to-end model tests.
+func loadTrainedScorer(t *testing.T) successmodel.Scorer {
+	t.Helper()
+	_, thisFile, _, _ := runtime.Caller(0)
+	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
+	m, err := successmodel.LoadModel(filepath.Join(root, "ml", "artifacts", "success_model.json"))
+	if err != nil {
+		t.Fatalf("load trained model: %v (run `python -m ml.train_success_model`)", err)
+	}
+	return m
+}
+
+// TestIntegration_Pipeline_StatisticalModelChangesAction is the Phase 3 end-to-end proof on
+// Postgres: for the identical expired-card event and merchant, the heuristic scorer selects
+// alt_method while the trained statistical model selects payment_link, and the persisted
+// decision records the statistical model's version. Same diagnosis, same economics — only the
+// P(success) source differs.
+func TestIntegration_Pipeline_StatisticalModelChangesAction(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	cleanupPipeline(t, db)
+	seedMerchant(t, db, "p2m_model", 3, 500, false)
+	s := New(db)
+
+	// Heuristic run.
+	peH := ingestOne(t, s, "p2m_model", "p2_model_h", "p2_evt_model_h", "Card expired", 250000, 0)
+	if err := pipeline.NewRunner(s, executor.MockDispatcher{}, successmodel.HeuristicScorer{}, nil).Process(context.Background(), peH); err != nil {
+		t.Fatalf("heuristic Process: %v", err)
+	}
+	hAction, _, hVer := readChosen(t, db, peH)
+	if hAction != string(domain.ActionAltMethod) {
+		t.Fatalf("heuristic chose %s, want alt_method", hAction)
+	}
+
+	// Statistical-model run on an identical event.
+	peM := ingestOne(t, s, "p2m_model", "p2_model_m", "p2_evt_model_m", "Card expired", 250000, 0)
+	if err := pipeline.NewRunner(s, executor.MockDispatcher{}, loadTrainedScorer(t), nil).Process(context.Background(), peM); err != nil {
+		t.Fatalf("model Process: %v", err)
+	}
+	mAction, _, mVer := readChosen(t, db, peM)
+	if mAction != string(domain.ActionPaymentLink) {
+		t.Fatalf("model chose %s, want payment_link", mAction)
+	}
+	if hAction == mAction {
+		t.Fatal("statistical model did not change the chosen action end-to-end")
+	}
+	if mVer == hVer || mVer == successmodel.ModelVersion {
+		t.Fatalf("model run recorded success model version %q (heuristic %q)", mVer, hVer)
+	}
+
+	// success_model_scores rows must be persisted under the statistical model version.
+	if n := scalarInt(t, db,
+		`SELECT count(*) FROM success_model_scores WHERE payment_event_id=$1::uuid AND model_version=$2`,
+		peM, mVer); n < 2 {
+		t.Fatalf("expected statistical success_model_scores rows, got %d", n)
+	}
+}
+
+// readChosen returns the chosen action, recovery_state, and the success-model version recorded
+// for a decision, joining decisions to its success_model_scores.
+func readChosen(t *testing.T, db *sql.DB, paymentEventID string) (string, string, string) {
+	t.Helper()
+	var action, state string
+	if err := db.QueryRow(
+		`SELECT chosen_action::text, recovery_state::text FROM decisions WHERE payment_event_id=$1::uuid`,
+		paymentEventID,
+	).Scan(&action, &state); err != nil {
+		t.Fatalf("read decision: %v", err)
+	}
+	var ver string
+	if err := db.QueryRow(
+		`SELECT DISTINCT model_version FROM success_model_scores WHERE payment_event_id=$1::uuid LIMIT 1`,
+		paymentEventID,
+	).Scan(&ver); err != nil {
+		t.Fatalf("read success model version: %v", err)
+	}
+	return action, state, ver
+}
 
 // seedMerchant creates a merchant with a full policy config and action-cost table so the
 // pipeline can load a complete decision context. killSwitch and minERV/maxRetries are
@@ -125,7 +207,7 @@ func TestIntegration_Pipeline_EndToEndRecovered(t *testing.T) {
 	cleanupPipeline(t, db)
 	seedMerchant(t, db, "p2m_healthy", 3, 500, false)
 	s := New(db)
-	runner := pipeline.NewRunner(s, executor.MockDispatcher{}, nil)
+	runner := pipeline.NewRunner(s, executor.MockDispatcher{}, nil, nil)
 
 	peID := ingestOne(t, s, "p2m_healthy", "p2_recovered", "p2_evt_recovered", "Issuer declined, try again", 500000, 0)
 
@@ -205,7 +287,7 @@ func TestIntegration_Pipeline_KillSwitchStops(t *testing.T) {
 	cleanupPipeline(t, db)
 	seedMerchant(t, db, "p2m_killed", 3, 500, true)
 	s := New(db)
-	runner := pipeline.NewRunner(s, executor.MockDispatcher{}, nil)
+	runner := pipeline.NewRunner(s, executor.MockDispatcher{}, nil, nil)
 
 	peID := ingestOne(t, s, "p2m_killed", "p2_killed", "p2_evt_killed", "Issuer declined", 500000, 0)
 	if err := runner.Process(context.Background(), peID); err != nil {

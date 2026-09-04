@@ -146,19 +146,24 @@ type Repository interface {
 type Runner struct {
 	repo       Repository
 	dispatcher executor.Dispatcher
+	scorer     successmodel.Scorer
 	logger     *slog.Logger
 }
 
 // NewRunner builds a Runner. A nil dispatcher defaults to the Phase 2 MockDispatcher; a nil
-// logger defaults to slog.Default().
-func NewRunner(repo Repository, dispatcher executor.Dispatcher, logger *slog.Logger) *Runner {
+// scorer defaults to the Phase-2 heuristic (the graceful fallback when no trained model is
+// loaded); a nil logger defaults to slog.Default().
+func NewRunner(repo Repository, dispatcher executor.Dispatcher, scorer successmodel.Scorer, logger *slog.Logger) *Runner {
 	if dispatcher == nil {
 		dispatcher = executor.MockDispatcher{}
+	}
+	if scorer == nil {
+		scorer = successmodel.HeuristicScorer{}
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runner{repo: repo, dispatcher: dispatcher, logger: logger}
+	return &Runner{repo: repo, dispatcher: dispatcher, scorer: scorer, logger: logger}
 }
 
 // Process runs the full recovery slice for one ingested payment_event. It is safe to invoke
@@ -191,12 +196,13 @@ func (r *Runner) Process(ctx context.Context, paymentEventID string) error {
 	// 2. Estimate P(success) per candidate and compute ERV. Guarantee no_action is always a
 	//    candidate so there is always a policy-passing fallback to select.
 	actions := ensureNoAction(diag.CandidateActions)
+	feats := successmodel.Features{Method: c.Method, PriorAttempts: effectiveAttempts, Amount: c.Amount}
 	ervInputs := make([]erv.Input, 0, len(actions))
 	for _, a := range actions {
 		cost := c.ActionCosts[a]
 		ervInputs = append(ervInputs, erv.Input{
 			Action:            a,
-			PSuccess:          successmodel.PSuccess(a, c.Method, effectiveAttempts),
+			PSuccess:          r.scorer.Score(a, feats),
 			RecoverableAmount: c.Amount,
 			Cost:              cost.MonetaryCost,
 			FrictionWeight:    cost.FrictionWeight,
@@ -269,7 +275,7 @@ func (r *Runner) Process(ctx context.Context, paymentEventID string) error {
 		Confidence:            diag.Confidence,
 		Rationale:             diag.Rationale,
 		DiagnosisModelVersion: diag.ModelVersion,
-		SuccessModelVersion:   successmodel.ModelVersion,
+		SuccessModelVersion:   r.scorer.Version(),
 		Candidates:            candRecords,
 		ChosenAction:          chosenAction,
 		ERVAtDecision:         chosen.ERV,

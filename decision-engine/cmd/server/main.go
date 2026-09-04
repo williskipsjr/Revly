@@ -23,7 +23,9 @@ import (
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/executor"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/ingest"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/pipeline"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/scoreapi"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/store"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/successmodel"
 )
 
 func main() {
@@ -44,16 +46,33 @@ func main() {
 		slog.Warn("ingestion disabled: DATABASE_URL not set (liveness/version only)")
 	}
 
+	// Phase 3: load the trained P(success) logistic-regression artifact. If it is absent or
+	// unreadable, degrade to the Phase-2 heuristic estimator rather than stalling — P(success)
+	// stays a code path fully separate from diagnosis either way (PLAN.md §5/§7).
+	scorer := loadScorer(cfg.SuccessModelPath)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler(cfg, database))
 	mux.HandleFunc("GET /version", versionHandler(cfg))
 
+	// Internal, service-to-service scoring/explainability endpoints (PLAN.md §9). The score
+	// endpoint needs only the scorer; erv/compute needs merchant costs, so it degrades to 503
+	// when no DB is configured (costs == nil).
+	var costs scoreapi.CostSource
+	if database != nil {
+		costs = store.New(database)
+	}
+	internalAPI := scoreapi.NewHandlers(scorer, costs)
+	mux.HandleFunc("POST /internal/success-model/score", internalAPI.Score)
+	mux.HandleFunc("POST /internal/erv/compute", internalAPI.ErvCompute)
+
 	if database != nil {
 		st := store.New(database)
-		// Phase 2: the recovery pipeline runs the full decision/execution slice for each newly
-		// ingested event. External action calls are mocked (executor.MockDispatcher); Postgres
-		// is the only durable store — no Redis dependency (PLAN.md §15).
-		runner := pipeline.NewRunner(st, executor.MockDispatcher{}, logger)
+		// Phase 2/3: the recovery pipeline runs the full decision/execution slice for each newly
+		// ingested event, sourcing P(success) from the statistical scorer. External action calls
+		// are mocked (executor.MockDispatcher); Postgres is the only durable store — no Redis
+		// dependency (PLAN.md §15).
+		runner := pipeline.NewRunner(st, executor.MockDispatcher{}, scorer, logger)
 		mux.HandleFunc(
 			"POST /v1/merchants/{id}/events/payment-failed",
 			ingest.NewHandler(st, runner, cfg.WebhookSecret, logger),
@@ -65,6 +84,11 @@ func main() {
 		}
 		slog.Info("ingestion endpoint mounted", "route", "POST /v1/merchants/{id}/events/payment-failed")
 	}
+	slog.Info("internal scoring endpoints mounted",
+		"score", "POST /internal/success-model/score",
+		"erv", "POST /internal/erv/compute",
+		"success_model", scorer.Version(),
+	)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -111,6 +135,24 @@ func mustConnect(dsn string) *sql.DB {
 	slog.Error("could not connect to database", "err", lastErr)
 	os.Exit(1)
 	return nil // unreachable
+}
+
+// loadScorer returns the statistical P(success) scorer loaded from path, or the Phase-2
+// heuristic fallback when path is empty or the artifact cannot be read/parsed. The choice is
+// logged so the active estimator is never a mystery.
+func loadScorer(path string) successmodel.Scorer {
+	if path == "" {
+		slog.Warn("SUCCESS_MODEL_PATH not set: using Phase-2 heuristic P(success) estimator")
+		return successmodel.HeuristicScorer{}
+	}
+	model, err := successmodel.LoadModel(path)
+	if err != nil {
+		slog.Warn("could not load success model; falling back to heuristic estimator",
+			"path", path, "err", err)
+		return successmodel.HeuristicScorer{}
+	}
+	slog.Info("loaded statistical P(success) model", "path", path, "version", model.Version())
+	return model
 }
 
 type healthResponse struct {
