@@ -1,8 +1,13 @@
 .PHONY: help up down logs ps build health \
         go-build go-vet go-test go-fmt go-run \
+        db-migrate db-seed test-integration \
         py-setup py-run \
         web-setup web-dev web-build \
         fmt
+
+# Host-facing connection string (compose maps postgres to localhost:5432).
+# Override for a different target DB: `make db-migrate PSQL_URL=...`
+PSQL_URL ?= postgres://revrec:revrec_dev_pw@localhost:5432/revrecovery?sslmode=disable
 
 help:
 	@echo "Revenue Recovery Platform - make targets"
@@ -10,6 +15,8 @@ help:
 	@echo "  build                        docker compose build"
 	@echo "  health                       curl service /health endpoints"
 	@echo "  go-build/go-vet/go-test/go-fmt/go-run   decision-engine (Go)"
+	@echo "  db-migrate / db-seed         apply schema / seed dev data (psql)"
+	@echo "  test-integration             decision-engine DB integration tests"
 	@echo "  py-setup / py-run            diagnosis-service (Python)"
 	@echo "  web-setup / web-dev / web-build   dashboard (Next.js)"
 	@echo "  fmt                          format everything"
@@ -50,6 +57,19 @@ go-fmt:
 
 go-run:
 	cd decision-engine && DECISION_ENGINE_PORT=8080 go run ./cmd/server
+
+# ---- Database (PostgreSQL) ----
+# The compose stack auto-applies these on a fresh volume; these targets re-apply
+# to an already-running DB. Both scripts are safe to re-run (IF NOT EXISTS / ON CONFLICT).
+db-migrate:
+	psql "$(PSQL_URL)" -v ON_ERROR_STOP=1 -f migrations/001_init.sql
+
+db-seed:
+	psql "$(PSQL_URL)" -v ON_ERROR_STOP=1 -f scripts/seed_dev.sql
+
+# DB-backed idempotency/concurrency/rollback proofs; needs a running, migrated Postgres.
+test-integration:
+	cd decision-engine && TEST_DATABASE_URL="$(PSQL_URL)" go test -tags=integration ./...
 
 # ---- diagnosis-service (Python) ----
 py-setup:

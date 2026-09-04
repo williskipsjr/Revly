@@ -14,6 +14,10 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Applied in alphabetical order, but ONLY on a fresh (empty) data volume.
+      # After changing these, recreate the volume: `docker compose down -v && docker compose up`.
+      - ./migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+      - ./scripts/seed_dev.sql:/docker-entrypoint-initdb.d/002_seed_dev.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-revrec} -d ${POSTGRES_DB:-revrecovery}"]
       interval: 5s
@@ -38,6 +42,8 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgres://revrec:revrec_dev_pw@postgres:5432/revrecovery?sslmode=disable}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       DIAGNOSIS_SERVICE_URL: ${DIAGNOSIS_SERVICE_URL:-http://diagnosis-service:8000}
+      # Empty = webhook signature verification disabled (dev only; logged at startup).
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
     ports:
       - "8080:8080"
     depends_on:
