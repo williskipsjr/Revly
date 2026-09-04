@@ -1,12 +1,14 @@
 // Command server is the entrypoint for the Go Decision + Execution planes.
 //
-// Phase 0: stdlib-only HTTP server exposing liveness/version so the service boots and
-// health-checks against an empty Postgres/Redis. Database and Redis readiness probes are
-// added in Phase 1 (when the pgx driver is introduced).
+// Phase 0: stdlib-only HTTP server exposing liveness/version.
+// Phase 1: connects to PostgreSQL (pgx) and mounts the idempotent payment-event
+// ingestion endpoint. If DATABASE_URL is unset the service still boots for
+// liveness/version, but ingestion is disabled.
 package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -17,6 +19,9 @@ import (
 	"time"
 
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/config"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/db"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/ingest"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/store"
 )
 
 func main() {
@@ -25,9 +30,35 @@ func main() {
 
 	cfg := config.Load()
 
+	// Connect to the durable store. The decision engine has no purpose without its source
+	// of truth, so a configured-but-unreachable database is a fatal startup error (after a
+	// short retry to absorb the container start-up race). With no DATABASE_URL we degrade to
+	// Phase 0 liveness-only mode.
+	var database *sql.DB
+	if cfg.DatabaseURL != "" {
+		database = mustConnect(cfg.DatabaseURL)
+		defer func() { _ = database.Close() }()
+	} else {
+		slog.Warn("ingestion disabled: DATABASE_URL not set (liveness/version only)")
+	}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", healthHandler(cfg))
+	mux.HandleFunc("GET /health", healthHandler(cfg, database))
 	mux.HandleFunc("GET /version", versionHandler(cfg))
+
+	if database != nil {
+		ingestor := store.New(database)
+		mux.HandleFunc(
+			"POST /v1/merchants/{id}/events/payment-failed",
+			ingest.NewHandler(ingestor, cfg.WebhookSecret, logger),
+		)
+		if cfg.WebhookSecret == "" {
+			slog.Warn("webhook signature verification DISABLED: WEBHOOK_SECRET not set")
+		} else {
+			slog.Info("webhook signature verification enabled")
+		}
+		slog.Info("ingestion endpoint mounted", "route", "POST /v1/merchants/{id}/events/payment-failed")
+	}
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -55,20 +86,58 @@ func main() {
 	}
 }
 
+// mustConnect connects to Postgres, retrying briefly to absorb the container start-up
+// race (docker-compose already gates on postgres health, but a direct `go run` may race).
+// It exits the process if the database is configured but unreachable.
+func mustConnect(dsn string) *sql.DB {
+	const attempts = 10
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		database, err := db.Connect(context.Background(), dsn)
+		if err == nil {
+			slog.Info("connected to database")
+			return database
+		}
+		lastErr = err
+		slog.Warn("database not ready, retrying", "attempt", i+1, "err", err)
+		time.Sleep(time.Second)
+	}
+	slog.Error("could not connect to database", "err", lastErr)
+	os.Exit(1)
+	return nil // unreachable
+}
+
 type healthResponse struct {
 	Status  string `json:"status"`
 	Service string `json:"service"`
 	Version string `json:"version"`
+	DB      string `json:"db"` // "ok" | "down" | "disabled"
 }
 
-func healthHandler(cfg config.Config) http.HandlerFunc {
+// healthHandler is a liveness probe: HTTP 200 whenever the process is serving. The db
+// field reports readiness of the durable store informationally (a down DB does not flip
+// liveness, so the compose healthcheck stays meaningful for process supervision).
+func healthHandler(cfg config.Config, database *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, healthResponse{
 			Status:  "ok",
 			Service: cfg.ServiceName,
 			Version: cfg.Version,
+			DB:      dbStatus(r.Context(), database),
 		})
 	}
+}
+
+func dbStatus(ctx context.Context, database *sql.DB) string {
+	if database == nil {
+		return "disabled"
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := database.PingContext(pingCtx); err != nil {
+		return "down"
+	}
+	return "ok"
 }
 
 func versionHandler(cfg config.Config) http.HandlerFunc {
