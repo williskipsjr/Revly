@@ -15,33 +15,7 @@
 //     its input, and therefore trivially unit-testable.
 package diagnosis
 
-// RootCause enumerates the diagnosable failure causes. The set mirrors the frozen contract
-// (schemas/diagnosis.schema.json) and the root_cause enum in migrations/001_init.sql.
-type RootCause string
-
-const (
-	RootTemporaryBankDecline RootCause = "temporary_bank_decline"
-	RootInsufficientFunds    RootCause = "insufficient_funds"
-	RootExpiredMethod        RootCause = "expired_method"
-	RootCheckoutAbandonment  RootCause = "checkout_abandonment"
-	RootChronicFailure       RootCause = "chronic_failure"
-	RootFraudSuspected       RootCause = "fraud_suspected"
-	RootUnknown              RootCause = "unknown"
-)
-
-// Action enumerates candidate recovery actions. Mirrors the action_type enum in the schema
-// and migration. Defined here (rather than imported) to keep this package dependency-free.
-type Action string
-
-const (
-	ActionRetry        Action = "retry"
-	ActionDelayedRetry Action = "delayed_retry"
-	ActionAltMethod    Action = "alt_method"
-	ActionPaymentLink  Action = "payment_link"
-	ActionNotify       Action = "notify"
-	ActionEscalate     Action = "escalate"
-	ActionNoAction     Action = "no_action"
-)
+import "github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/domain"
 
 // Source records whether a diagnosis came from the LLM or the rule-based path. In Phase 2
 // there is no LLM, so every diagnosis is rule-based. The value mirrors the schema's source
@@ -60,7 +34,7 @@ const ModelVersion = "rules-v1"
 
 // Input is the minimal slice of a payment event the rule table reasons over. It is a
 // deliberately small, self-contained struct (no import of internal/ingest) so the package
-// stays a pure leaf. The pipeline maps a loaded payment_events row onto this.
+// stays a leaf. The pipeline maps a loaded payment_events row onto this.
 type Input struct {
 	EventType     string // payment_event_type, e.g. "payment.failed", "checkout.abandoned"
 	FailureReason string // provider failure_reason free text; may be empty
@@ -73,10 +47,10 @@ type Input struct {
 // preference (most-preferred first); the ERV layer re-ranks by economic value, so this
 // order is only a hint, never an authorization.
 type Diagnosis struct {
-	RootCause        RootCause
+	RootCause        domain.RootCause
 	Confidence       float64 // 0..1, GATE ONLY — never the ERV probability
 	Rationale        string
-	CandidateActions []Action
+	CandidateActions []domain.Action
 	ModelVersion     string
 	Source           Source
 }

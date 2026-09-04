@@ -1,6 +1,10 @@
 package diagnosis
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/domain"
+)
 
 // TestDiagnose_RuleTable exercises every branch of the rule table, including the
 // specificity ordering (fraud beats attempt count; specific reasons beat the generic
@@ -9,56 +13,56 @@ func TestDiagnose_RuleTable(t *testing.T) {
 	tests := []struct {
 		name      string
 		in        Input
-		wantCause RootCause
-		wantFirst Action // most-preferred candidate
+		wantCause domain.RootCause
+		wantFirst domain.Action // most-preferred candidate
 	}{
 		{
 			name:      "fraud reason wins over everything",
 			in:        Input{EventType: "payment.failed", FailureReason: "Suspected fraud on card", PriorAttempts: 9},
-			wantCause: RootFraudSuspected,
-			wantFirst: ActionEscalate,
+			wantCause: domain.RootFraudSuspected,
+			wantFirst: domain.ActionEscalate,
 		},
 		{
 			name:      "checkout abandonment by event type",
 			in:        Input{EventType: "checkout.abandoned", FailureReason: ""},
-			wantCause: RootCheckoutAbandonment,
-			wantFirst: ActionPaymentLink,
+			wantCause: domain.RootCheckoutAbandonment,
+			wantFirst: domain.ActionPaymentLink,
 		},
 		{
 			name:      "insufficient funds",
 			in:        Input{EventType: "payment.failed", FailureReason: "Insufficient funds in account"},
-			wantCause: RootInsufficientFunds,
-			wantFirst: ActionDelayedRetry,
+			wantCause: domain.RootInsufficientFunds,
+			wantFirst: domain.ActionDelayedRetry,
 		},
 		{
 			name:      "expired method",
 			in:        Input{EventType: "payment.failed", FailureReason: "Card expired"},
-			wantCause: RootExpiredMethod,
-			wantFirst: ActionAltMethod,
+			wantCause: domain.RootExpiredMethod,
+			wantFirst: domain.ActionAltMethod,
 		},
 		{
 			name:      "chronic after repeated attempts",
 			in:        Input{EventType: "payment.failed", FailureReason: "declined", PriorAttempts: 3},
-			wantCause: RootChronicFailure,
-			wantFirst: ActionNotify,
+			wantCause: domain.RootChronicFailure,
+			wantFirst: domain.ActionNotify,
 		},
 		{
 			name:      "transient bank decline",
 			in:        Input{EventType: "payment.failed", FailureReason: "Issuer declined, please try again", PriorAttempts: 0},
-			wantCause: RootTemporaryBankDecline,
-			wantFirst: ActionDelayedRetry,
+			wantCause: domain.RootTemporaryBankDecline,
+			wantFirst: domain.ActionDelayedRetry,
 		},
 		{
 			name:      "gateway timeout is transient",
 			in:        Input{EventType: "subscription.charge_failed", FailureReason: "Gateway timeout", PriorAttempts: 1},
-			wantCause: RootTemporaryBankDecline,
-			wantFirst: ActionDelayedRetry,
+			wantCause: domain.RootTemporaryBankDecline,
+			wantFirst: domain.ActionDelayedRetry,
 		},
 		{
 			name:      "unknown when no signal",
 			in:        Input{EventType: "payment.failed", FailureReason: "", PriorAttempts: 0},
-			wantCause: RootUnknown,
-			wantFirst: ActionNotify,
+			wantCause: domain.RootUnknown,
+			wantFirst: domain.ActionNotify,
 		},
 	}
 
@@ -107,11 +111,11 @@ func TestDiagnose_Invariants(t *testing.T) {
 		}
 		// no_action must always be an available candidate — the safe fallback the
 		// downstream layers can always fall back to.
-		if !hasAction(d.CandidateActions, ActionNoAction) {
+		if !hasAction(d.CandidateActions, domain.ActionNoAction) {
 			t.Errorf("no_action must always be a candidate; got %v (input %+v)", d.CandidateActions, in)
 		}
 		// candidate list must not contain duplicates.
-		seen := map[Action]bool{}
+		seen := map[domain.Action]bool{}
 		for _, a := range d.CandidateActions {
 			if seen[a] {
 				t.Errorf("duplicate candidate %q (input %+v)", a, in)
@@ -121,7 +125,7 @@ func TestDiagnose_Invariants(t *testing.T) {
 	}
 }
 
-func hasAction(as []Action, want Action) bool {
+func hasAction(as []domain.Action, want domain.Action) bool {
 	for _, a := range as {
 		if a == want {
 			return true

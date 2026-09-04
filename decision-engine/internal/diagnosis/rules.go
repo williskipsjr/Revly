@@ -1,6 +1,10 @@
 package diagnosis
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/domain"
+)
 
 // chronicAttemptFloor is the prior-attempt count at or above which a still-failing payment
 // is treated as chronic rather than transient — repeated identical failures stop being a
@@ -26,56 +30,56 @@ func Diagnose(in Input) Diagnosis {
 	// count. The economic layers never "outvote" a fraud diagnosis; the policy engine owns
 	// the hard stop (Phase 5), diagnosis just surfaces the cause and the conservative set.
 	if containsAny(reason, "fraud", "stolen", "blacklist", "risk", "suspicious") {
-		return diag(RootFraudSuspected, 0.70,
+		return diag(domain.RootFraudSuspected, 0.70,
 			"Failure reason indicates suspected fraud/risk; only escalation or no action is safe pending review.",
-			ActionEscalate, ActionNoAction)
+			domain.ActionEscalate, domain.ActionNoAction)
 	}
 
 	// An abandoned checkout is a distinct event type, not a decline: the customer left
 	// before paying, so the recovery is to re-present a way to pay, not to retry a charge.
 	if in.EventType == "checkout.abandoned" {
-		return diag(RootCheckoutAbandonment, 0.80,
+		return diag(domain.RootCheckoutAbandonment, 0.80,
 			"Checkout was abandoned before payment completed; re-engage the customer with a payment link or reminder.",
-			ActionPaymentLink, ActionNotify, ActionNoAction)
+			domain.ActionPaymentLink, domain.ActionNotify, domain.ActionNoAction)
 	}
 
 	if containsAny(reason, "insufficient", "insufficient_funds", "low balance", "not enough") {
-		return diag(RootInsufficientFunds, 0.75,
+		return diag(domain.RootInsufficientFunds, 0.75,
 			"Insufficient funds; a later retry may succeed once the customer has balance, otherwise notify.",
-			ActionDelayedRetry, ActionNotify, ActionNoAction)
+			domain.ActionDelayedRetry, domain.ActionNotify, domain.ActionNoAction)
 	}
 
 	if containsAny(reason, "expired", "expiry", "expire") {
-		return diag(RootExpiredMethod, 0.80,
+		return diag(domain.RootExpiredMethod, 0.80,
 			"Payment method appears expired; retrying the same method will keep failing — offer an alternative method or link.",
-			ActionAltMethod, ActionPaymentLink, ActionNotify, ActionNoAction)
+			domain.ActionAltMethod, domain.ActionPaymentLink, domain.ActionNotify, domain.ActionNoAction)
 	}
 
 	// Repeated failures with no more specific cause: stop treating it as transient.
 	if in.PriorAttempts >= chronicAttemptFloor {
-		return diag(RootChronicFailure, 0.65,
+		return diag(domain.RootChronicFailure, 0.65,
 			"Payment has failed repeatedly with no transient cause identified; automated retries are unlikely to help.",
-			ActionNotify, ActionEscalate, ActionNoAction)
+			domain.ActionNotify, domain.ActionEscalate, domain.ActionNoAction)
 	}
 
 	// Generic transient decline: issuer/gateway/network hiccup, do-not-honour, timeouts.
 	if containsAny(reason,
 		"declin", "do not honour", "do not honor", "issuer", "bank", "gateway",
 		"timeout", "timed out", "network", "temporar", "try again", "unavailable") {
-		return diag(RootTemporaryBankDecline, 0.60,
+		return diag(domain.RootTemporaryBankDecline, 0.60,
 			"Transient bank/gateway decline; a delayed retry has a reasonable chance of succeeding.",
-			ActionDelayedRetry, ActionRetry, ActionNotify, ActionNoAction)
+			domain.ActionDelayedRetry, domain.ActionRetry, domain.ActionNotify, domain.ActionNoAction)
 	}
 
 	// No confident signal. Low confidence keeps the conservative set; the confidence gate
 	// (Phase 5) will later disallow autonomous retries below its floor.
-	return diag(RootUnknown, 0.30,
+	return diag(domain.RootUnknown, 0.30,
 		"No confident root cause identified from the available signals; stay conservative.",
-		ActionNotify, ActionNoAction)
+		domain.ActionNotify, domain.ActionNoAction)
 }
 
 // diag builds a Diagnosis with the Phase-2 rule-based provenance filled in.
-func diag(cause RootCause, confidence float64, rationale string, actions ...Action) Diagnosis {
+func diag(cause domain.RootCause, confidence float64, rationale string, actions ...domain.Action) Diagnosis {
 	return Diagnosis{
 		RootCause:        cause,
 		Confidence:       confidence,
