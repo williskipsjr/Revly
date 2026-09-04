@@ -1,0 +1,5 @@
+# P(success) model training dependencies (Phase 3).
+# Deliberately minimal: numpy only. The logistic regression is implemented directly
+# (ml/logreg.py) — NO scikit-learn / XGBoost / deep-learning framework. The model is an
+# interpretable statistical MVP, not ML sophistication (PLAN.md §7).
+numpy>=1.26
