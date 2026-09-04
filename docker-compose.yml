@@ -17,7 +17,8 @@ services:
       # Applied in alphabetical order, but ONLY on a fresh (empty) data volume.
       # After changing these, recreate the volume: `docker compose down -v && docker compose up`.
       - ./migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
-      - ./scripts/seed_dev.sql:/docker-entrypoint-initdb.d/002_seed_dev.sql:ro
+      - ./migrations/002_phase2_kill_switch.sql:/docker-entrypoint-initdb.d/002_phase2_kill_switch.sql:ro
+      - ./scripts/seed_dev.sql:/docker-entrypoint-initdb.d/003_seed_dev.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-revrec} -d ${POSTGRES_DB:-revrecovery}"]
       interval: 5s

@@ -63,6 +63,7 @@ go-run:
 # to an already-running DB. Both scripts are safe to re-run (IF NOT EXISTS / ON CONFLICT).
 db-migrate:
 	psql "$(PSQL_URL)" -v ON_ERROR_STOP=1 -f migrations/001_init.sql
+	psql "$(PSQL_URL)" -v ON_ERROR_STOP=1 -f migrations/002_phase2_kill_switch.sql
 
 db-seed:
 	psql "$(PSQL_URL)" -v ON_ERROR_STOP=1 -f scripts/seed_dev.sql

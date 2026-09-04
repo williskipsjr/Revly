@@ -7,8 +7,14 @@ PLAN.md §8: `merchants`, `merchant_policy_config`, `merchant_action_costs`, `pa
 (UNIQUE `idempotency_key`), `outcomes`, `audit_log`.
 
 Only `payments` and `payment_events` (plus reads of `merchants`) carry application logic in
-Phase 1; the remaining tables are schema-only, awaiting later phases. No future-phase
-behavior is implemented here.
+Phase 1; the remaining tables are schema-only, awaiting later phases.
+
+**`002_phase2_kill_switch.sql`** (Phase 2) is an additive change: it adds the per-merchant
+`merchant_policy_config.kill_switch BOOLEAN NOT NULL DEFAULT false` column that the Phase 2
+policy engine reads (PLAN.md §6). It is safe to re-run (`ADD COLUMN IF NOT EXISTS`) and the
+default keeps every existing config row and the seed working unchanged. Phase 2 also begins
+populating the previously schema-only tables (`diagnoses`, `success_model_scores`,
+`erv_scores`, `decisions`, `actions`, `outcomes`, `audit_log`) via the recovery pipeline.
 
 ## Runner
 
@@ -31,7 +37,7 @@ Two ways to apply it:
 - **Against a running DB (manual):** from the repo root,
 
   ```
-  make db-migrate   # psql -f migrations/001_init.sql
+  make db-migrate   # psql -f 001_init.sql, then 002_phase2_kill_switch.sql
   make db-seed      # psql -f scripts/seed_dev.sql
   ```
 
