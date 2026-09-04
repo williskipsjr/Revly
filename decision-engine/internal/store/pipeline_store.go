@@ -65,6 +65,13 @@ func (s *Store) LoadContext(ctx context.Context, paymentEventID string) (pipelin
 	return c, nil
 }
 
+// MerchantActionCosts returns a merchant's per-action cost/friction config. It backs the
+// /internal/erv/compute endpoint (internal/scoreapi.CostSource); the pipeline uses the same
+// data via LoadContext.
+func (s *Store) MerchantActionCosts(ctx context.Context, merchantID string) (map[domain.Action]pipeline.ActionCost, error) {
+	return s.loadActionCosts(ctx, merchantID)
+}
+
 func (s *Store) loadActionCosts(ctx context.Context, merchantID string) (map[domain.Action]pipeline.ActionCost, error) {
 	rows, err := s.db.QueryContext(ctx, loadActionCostsSQL, merchantID)
 	if err != nil {
