@@ -4,6 +4,10 @@ This is a navigational summary. The authoritative documents are
 [`../PS and Solution/PROBLEM_STATEMENT.md`](../PS%20and%20Solution/PROBLEM_STATEMENT.md) (what/why)
 and [`../PS and Solution/PLAN.md`](../PS%20and%20Solution/PLAN.md) (how).
 
+For the full presentation-ready architecture/workflow diagrams (system planes,
+end-to-end recovery pipeline, recovery state machine, merchant economics), see
+[`ARCHITECTURE_DIAGRAM.md`](ARCHITECTURE_DIAGRAM.md).
+
 ## The invariant
 
 ```
