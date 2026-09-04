@@ -1,0 +1,136 @@
+{
+  "coefficients": {
+    "action_alt_method": 0.05493834253872889,
+    "action_delayed_retry": 0.06173590573358281,
+    "action_escalate": 0.318131004364397,
+    "action_notify": -1.26852003897783,
+    "action_payment_link": 0.5296901630521862,
+    "action_retry": -0.25369749616393267,
+    "amount_tier": -0.03621135235336222,
+    "method_card": -0.0933009856697825,
+    "method_emi": -0.2565358919903029,
+    "method_netbanking": -0.13104043991038256,
+    "method_other": -0.20800496042486452,
+    "method_upi": 0.07395946425424954,
+    "method_wallet": 0.05720069428822087,
+    "prior_attempts": -0.432962076388169
+  },
+  "disclaimer": "Trained on synthetic/simulated data with documented assumptions (see ml/README_data_assumptions.md). Does NOT represent real Razorpay customer behaviour. Interpretable logistic-regression MVP \u2014 not a production-grade model.",
+  "feature_spec": {
+    "actions": [
+      "retry",
+      "delayed_retry",
+      "alt_method",
+      "payment_link",
+      "notify",
+      "escalate"
+    ],
+    "amount_tier": {
+      "kind": "floor_log10_paise",
+      "max": 8,
+      "min": 0
+    },
+    "methods": [
+      "card",
+      "upi",
+      "netbanking",
+      "wallet",
+      "emi",
+      "other"
+    ],
+    "numeric": [
+      {
+        "mean": 1.2887142857142857,
+        "name": "prior_attempts",
+        "std": 1.4297856197232321
+      },
+      {
+        "mean": 4.709071428571429,
+        "name": "amount_tier",
+        "std": 0.9330842837666087
+      }
+    ]
+  },
+  "generated_at": "2026-09-04T20:04:31.030916+00:00",
+  "intercept": -0.5577221194528595,
+  "metrics": {
+    "holdout": {
+      "auc": 0.6789,
+      "brier": 0.2068,
+      "log_loss": 0.6005,
+      "mean_pred": 0.3529,
+      "n": 6000,
+      "positive_rate": 0.3465
+    },
+    "train": {
+      "auc": 0.6811,
+      "brier": 0.2077,
+      "log_loss": 0.6016,
+      "mean_pred": 0.3526,
+      "n": 28000,
+      "positive_rate": 0.3526
+    },
+    "val": {
+      "auc": 0.6846,
+      "brier": 0.2063,
+      "log_loss": 0.5985,
+      "mean_pred": 0.3533,
+      "n": 6000,
+      "positive_rate": 0.3503
+    }
+  },
+  "model_type": "logistic_regression",
+  "model_version": "logreg-synthetic-v1",
+  "sanity_checks": {
+    "p_non_increasing_in_prior_attempts": true,
+    "payment_link_beats_alt_method": true,
+    "payment_link_beats_retry": true
+  },
+  "seed": 20260905,
+  "selected_l2": 0.0,
+  "test_vectors": [
+    {
+      "action": "retry",
+      "amount": 250000,
+      "method": "card",
+      "p_success": 0.37150456,
+      "prior_attempts": 0
+    },
+    {
+      "action": "delayed_retry",
+      "amount": 250000,
+      "method": "card",
+      "p_success": 0.44760945,
+      "prior_attempts": 0
+    },
+    {
+      "action": "alt_method",
+      "amount": 250000,
+      "method": "card",
+      "p_success": 0.44592932,
+      "prior_attempts": 0
+    },
+    {
+      "action": "payment_link",
+      "amount": 100000,
+      "method": "upi",
+      "p_success": 0.53047827,
+      "prior_attempts": 1
+    },
+    {
+      "action": "escalate",
+      "amount": 4000000,
+      "method": "netbanking",
+      "p_success": 0.28111551,
+      "prior_attempts": 3
+    },
+    {
+      "action": "notify",
+      "amount": 30000,
+      "method": "emi",
+      "p_success": 0.09358315,
+      "prior_attempts": 2
+    }
+  ],
+  "training_data": "synthetic"
+}

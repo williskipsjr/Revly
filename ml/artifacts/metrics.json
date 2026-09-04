@@ -1,0 +1,102 @@
+{
+  "calibration_holdout": [
+    {
+      "bin": "[0.0,0.1)",
+      "count": 204,
+      "empirical": 0.1127,
+      "mean_pred": 0.0736
+    },
+    {
+      "bin": "[0.1,0.2)",
+      "count": 994,
+      "empirical": 0.166,
+      "mean_pred": 0.1567
+    },
+    {
+      "bin": "[0.2,0.3)",
+      "count": 877,
+      "empirical": 0.2383,
+      "mean_pred": 0.2516
+    },
+    {
+      "bin": "[0.3,0.4)",
+      "count": 1381,
+      "empirical": 0.3244,
+      "mean_pred": 0.3528
+    },
+    {
+      "bin": "[0.4,0.5)",
+      "count": 1626,
+      "empirical": 0.4342,
+      "mean_pred": 0.4496
+    },
+    {
+      "bin": "[0.5,0.6)",
+      "count": 784,
+      "empirical": 0.5497,
+      "mean_pred": 0.5435
+    },
+    {
+      "bin": "[0.6,0.7)",
+      "count": 134,
+      "empirical": 0.7239,
+      "mean_pred": 0.6097
+    }
+  ],
+  "disclaimer": "Trained on synthetic/simulated data with documented assumptions (see ml/README_data_assumptions.md). Does NOT represent real Razorpay customer behaviour. Interpretable logistic-regression MVP \u2014 not a production-grade model.",
+  "metrics": {
+    "holdout": {
+      "auc": 0.6789,
+      "brier": 0.2068,
+      "log_loss": 0.6005,
+      "mean_pred": 0.3529,
+      "n": 6000,
+      "positive_rate": 0.3465
+    },
+    "train": {
+      "auc": 0.6811,
+      "brier": 0.2077,
+      "log_loss": 0.6016,
+      "mean_pred": 0.3526,
+      "n": 28000,
+      "positive_rate": 0.3526
+    },
+    "val": {
+      "auc": 0.6846,
+      "brier": 0.2063,
+      "log_loss": 0.5985,
+      "mean_pred": 0.3533,
+      "n": 6000,
+      "positive_rate": 0.3503
+    }
+  },
+  "model_version": "logreg-synthetic-v1",
+  "sanity_checks": {
+    "p_non_increasing_in_prior_attempts": true,
+    "payment_link_beats_alt_method": true,
+    "payment_link_beats_retry": true
+  },
+  "selected_l2": 0.0,
+  "selection_grid": [
+    {
+      "l2": 0.0,
+      "val_log_loss": 0.5985
+    },
+    {
+      "l2": 0.0001,
+      "val_log_loss": 0.5986
+    },
+    {
+      "l2": 0.001,
+      "val_log_loss": 0.5987
+    },
+    {
+      "l2": 0.01,
+      "val_log_loss": 0.6014
+    },
+    {
+      "l2": 0.1,
+      "val_log_loss": 0.6196
+    }
+  ]
+}
