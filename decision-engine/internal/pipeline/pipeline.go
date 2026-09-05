@@ -147,13 +147,47 @@ type Runner struct {
 	repo       Repository
 	dispatcher executor.Dispatcher
 	scorer     successmodel.Scorer
+	diagnoser  Diagnoser
 	logger     *slog.Logger
+}
+
+// Diagnoser produces a root-cause diagnosis for one event. It NEVER returns an error: an
+// implementation must always resolve to a valid, contract-shaped diagnosis via its own internal
+// fallback (PLAN.md §4/§15). The Phase-2 default is the deterministic rule table; Phase 4 adds
+// an LLM-backed implementation that falls back to that same table on any failure. Keeping the
+// interface error-free means the decision plane never stalls on diagnosis — the invariant that
+// the decision plane keeps functioning even when the intelligence plane is down.
+type Diagnoser interface {
+	Diagnose(ctx context.Context, in diagnosis.Input) diagnosis.Diagnosis
+}
+
+// ruleBasedDiagnoser is the default Diagnoser: the pure Phase-2 rule table. It ignores ctx
+// (the table is a local pure function) and is always the fallback authority.
+type ruleBasedDiagnoser struct{}
+
+func (ruleBasedDiagnoser) Diagnose(_ context.Context, in diagnosis.Input) diagnosis.Diagnosis {
+	return diagnosis.Diagnose(in)
+}
+
+// Option customises a Runner at construction. Added as variadic so existing call sites and the
+// Phase-2/3 nil-defaults constructor shape are unchanged.
+type Option func(*Runner)
+
+// WithDiagnoser overrides the default rule-based diagnoser (e.g. with the Phase-4 LLM-backed
+// one). A nil diagnoser is ignored, leaving the rule-table default in place.
+func WithDiagnoser(d Diagnoser) Option {
+	return func(r *Runner) {
+		if d != nil {
+			r.diagnoser = d
+		}
+	}
 }
 
 // NewRunner builds a Runner. A nil dispatcher defaults to the Phase 2 MockDispatcher; a nil
 // scorer defaults to the Phase-2 heuristic (the graceful fallback when no trained model is
-// loaded); a nil logger defaults to slog.Default().
-func NewRunner(repo Repository, dispatcher executor.Dispatcher, scorer successmodel.Scorer, logger *slog.Logger) *Runner {
+// loaded); a nil logger defaults to slog.Default(). The diagnoser defaults to the deterministic
+// rule table unless WithDiagnoser overrides it.
+func NewRunner(repo Repository, dispatcher executor.Dispatcher, scorer successmodel.Scorer, logger *slog.Logger, opts ...Option) *Runner {
 	if dispatcher == nil {
 		dispatcher = executor.MockDispatcher{}
 	}
@@ -163,7 +197,11 @@ func NewRunner(repo Repository, dispatcher executor.Dispatcher, scorer successmo
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runner{repo: repo, dispatcher: dispatcher, scorer: scorer, logger: logger}
+	r := &Runner{repo: repo, dispatcher: dispatcher, scorer: scorer, diagnoser: ruleBasedDiagnoser{}, logger: logger}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
 }
 
 // Process runs the full recovery slice for one ingested payment_event. It is safe to invoke
@@ -182,8 +220,10 @@ func (r *Runner) Process(ctx context.Context, paymentEventID string) error {
 
 	m := recovery.NewMachine() // FAILED
 
-	// 1. Diagnose (rule-based; confidence is a gate, never P(success)).
-	diag := diagnosis.Diagnose(diagnosis.Input{
+	// 1. Diagnose (rule-based table by default; Phase 4 may use the LLM-backed diagnoser, which
+	//    itself falls back to the rule table on any failure). Confidence is a gate, never
+	//    P(success). The diagnoser never errors — the decision plane never stalls on diagnosis.
+	diag := r.diagnoser.Diagnose(ctx, diagnosis.Input{
 		EventType:     c.EventType,
 		FailureReason: c.FailureReason,
 		Method:        c.Method,
@@ -293,6 +333,7 @@ func (r *Runner) Process(ctx context.Context, paymentEventID string) error {
 		"decision_id", decisionID,
 		"root_cause", diag.RootCause,
 		"confidence", diag.Confidence,
+		"diagnosis_source", diag.Source,
 		"chosen_action", chosenAction,
 		"erv_at_decision", chosen.ERV,
 		"policy_result", chosenPolicy.Decision,

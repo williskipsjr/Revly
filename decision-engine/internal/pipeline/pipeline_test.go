@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/diagnosis"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/domain"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/successmodel"
 )
@@ -244,6 +245,81 @@ func TestProcess_ModelChangesChosenAction(t *testing.T) {
 	// The persisted model provenance must reflect the statistical model, not the heuristic.
 	if modelRepo.decision.SuccessModelVersion == successmodel.ModelVersion {
 		t.Fatalf("model run recorded heuristic version %q", modelRepo.decision.SuccessModelVersion)
+	}
+}
+
+// stubDiagnoser is an injectable Diagnoser (Phase 4 seam) that returns a fixed diagnosis and
+// records what it was asked, so the pipeline's use of the pluggable diagnoser is assertable
+// without any network or LLM.
+type stubDiagnoser struct {
+	out      diagnosis.Diagnosis
+	gotInput diagnosis.Input
+	called   bool
+}
+
+func (s *stubDiagnoser) Diagnose(_ context.Context, in diagnosis.Input) diagnosis.Diagnosis {
+	s.called = true
+	s.gotInput = in
+	return s.out
+}
+
+// TestProcess_WithInjectedDiagnoser: WithDiagnoser routes diagnosis through the injected
+// diagnoser (the Phase-4 LLM seam), and its result — not the rule table's — is what the
+// pipeline persists and reasons over. Economics/policy still rank and authorise the action.
+func TestProcess_WithInjectedDiagnoser(t *testing.T) {
+	stub := &stubDiagnoser{out: diagnosis.Diagnosis{
+		RootCause:        domain.RootExpiredMethod, // rule table would say temporary_bank_decline here
+		Confidence:       0.9,
+		Rationale:        "injected llm diagnosis",
+		CandidateActions: []domain.Action{domain.ActionAltMethod, domain.ActionPaymentLink, domain.ActionNoAction},
+		ModelVersion:     "claude-sonnet-5",
+		Source:           diagnosis.SourceLLM,
+	}}
+	c := baseContext() // FailureReason "Issuer declined, please try again"
+	c.ActionCosts[domain.ActionAltMethod] = ActionCost{MonetaryCost: 20, FrictionWeight: 0.8}
+	c.ActionCosts[domain.ActionPaymentLink] = ActionCost{MonetaryCost: 20, FrictionWeight: 0.8}
+	repo := &fakeRepo{ctx: c, execCreated: true}
+	r := NewRunner(repo, nil, nil, nil, WithDiagnoser(stub))
+
+	if err := r.Process(context.Background(), "pe_1"); err != nil {
+		t.Fatalf("Process errored: %v", err)
+	}
+	if !stub.called {
+		t.Fatal("injected diagnoser was not used")
+	}
+	if stub.gotInput.EventType != c.EventType || stub.gotInput.FailureReason != c.FailureReason {
+		t.Fatalf("diagnoser received %+v, want event/reason from context", stub.gotInput)
+	}
+	// The persisted diagnosis must be the INJECTED one, proving the rule table was bypassed.
+	if repo.decision.RootCause != domain.RootExpiredMethod {
+		t.Fatalf("persisted root cause = %q, want expired_method (injected)", repo.decision.RootCause)
+	}
+	if repo.decision.DiagnosisModelVersion != "claude-sonnet-5" {
+		t.Fatalf("persisted diagnosis model version = %q, want claude-sonnet-5", repo.decision.DiagnosisModelVersion)
+	}
+	// Economics/policy still choose from the injected candidate set (+ the always-added no_action).
+	switch repo.decision.ChosenAction {
+	case domain.ActionAltMethod, domain.ActionPaymentLink, domain.ActionNoAction:
+	default:
+		t.Fatalf("chosen action %q is not among the injected candidates", repo.decision.ChosenAction)
+	}
+}
+
+// TestNewRunner_NilDiagnoserKeepsRuleBased: WithDiagnoser(nil) is a no-op, leaving the
+// deterministic rule table in place — the same default an unconfigured deployment uses.
+func TestNewRunner_NilDiagnoserKeepsRuleBased(t *testing.T) {
+	repo := &fakeRepo{ctx: baseContext(), execCreated: true}
+	r := NewRunner(repo, nil, nil, nil, WithDiagnoser(nil))
+
+	if err := r.Process(context.Background(), "pe_1"); err != nil {
+		t.Fatalf("Process errored: %v", err)
+	}
+	// Rule table for "Issuer declined, please try again" → temporary_bank_decline / rules-v1.
+	if repo.decision.RootCause != domain.RootTemporaryBankDecline {
+		t.Fatalf("nil diagnoser should keep rule-based; got root cause %q", repo.decision.RootCause)
+	}
+	if repo.decision.DiagnosisModelVersion != diagnosis.ModelVersion {
+		t.Fatalf("nil diagnoser model version = %q, want %q", repo.decision.DiagnosisModelVersion, diagnosis.ModelVersion)
 	}
 }
 
