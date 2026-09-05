@@ -19,8 +19,9 @@ services:
       - ./migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
       - ./migrations/002_phase2_kill_switch.sql:/docker-entrypoint-initdb.d/002_phase2_kill_switch.sql:ro
       - ./migrations/003_phase5_policy.sql:/docker-entrypoint-initdb.d/003_phase5_policy.sql:ro
+      - ./migrations/004_phase6_execution.sql:/docker-entrypoint-initdb.d/004_phase6_execution.sql:ro
       # Seed runs last (init scripts apply in alphabetical order), after every migration.
-      - ./scripts/seed_dev.sql:/docker-entrypoint-initdb.d/004_seed_dev.sql:ro
+      - ./scripts/seed_dev.sql:/docker-entrypoint-initdb.d/005_seed_dev.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-revrec} -d ${POSTGRES_DB:-revrecovery}"]
       interval: 5s
@@ -53,6 +54,15 @@ services:
       # Phase 3: the trained P(success) logistic-regression artifact, mounted read-only below.
       # If absent/unreadable the engine falls back to the Phase-2 heuristic (logged at startup).
       SUCCESS_MODEL_PATH: ${SUCCESS_MODEL_PATH:-/etc/decision-engine/success_model.json}
+      # Phase 6: background reconciliation sweep interval (ms); 0/unset disables the loop.
+      RECONCILE_INTERVAL_MS: ${RECONCILE_INTERVAL_MS:-30000}
+      # Phase 6: Razorpay sandbox credentials. Unset → deterministic mock executor (no money moves).
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_BASE_URL: ${RAZORPAY_BASE_URL:-https://api.razorpay.com}
+      # Phase 7: public/admin API keys. Unset → auth disabled (dev only; logged at startup).
+      API_KEY: ${API_KEY:-}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
     ports:
       - "8080:8080"
     volumes:
@@ -102,5 +112,33 @@ services:
       timeout: 3s
       retries: 12
 
+  # Phase 10: minimal engineering telemetry (intentionally secondary to the Next.js product
+  # dashboard). Prometheus scrapes the decision-engine /metrics endpoint; Grafana renders one
+  # basic dashboard. Both are optional to the demo and can be omitted with a compose profile.
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - decision-engine
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+
 volumes:
   pgdata:
+  grafana-data:

@@ -153,6 +153,24 @@ $$\text{ERV}(a) = \Big( P(\text{success} \mid \mathbf{x}, a) \times \text{Amount
 
 ## 🚀 Quickstart Guide
 
+> **Backend run & API reference:** see **[Backend Running.md](./Backend%20Running.md)** for the
+> full local run/verify guide (env vars, migrations, health/readiness, reset, troubleshooting) and
+> **[Backend Contracts API.md](./Backend%20Contracts%20API.md)** for every implemented HTTP route
+> (request/response schemas, auth, idempotency, examples). Production-hardening plan:
+> **[docs/production_hardening_notes.md](./docs/production_hardening_notes.md)**.
+
+### Backend at a glance
+- **Go decision-engine** (`:8080`): ingestion → diagnosis → P(success) → ERV → **deterministic
+  policy** → idempotent execution → Postgres. Phase 6 adds `pending_confirmation` + a
+  reconciliation loop and optional Razorpay sandbox execution; Phase 7 adds the merchant-scoped
+  public API (decisions, metrics, audit, override, kill switch, policy-config).
+- **Redis** is an optional accelerator (cooldown/rate counters + job queue) — never authoritative;
+  if it is down the engine falls back to Postgres-derived checks.
+- **Health:** `GET /health`, **Readiness:** `GET /ready`, **Metrics:** `GET /metrics` (Prometheus),
+  Grafana at `:3001`, Prometheus at `:9090`.
+- **Demo:** `./scripts/seed_demo_data.sh` (seed + drive events), `./scripts/chaos_demo.sh`
+  (fraud hard-stop, kill switch, AI-down, Redis-down). **Simulation:** `python3 sim/run_simulation.py`.
+
 ### Prerequisites
 * **Docker & Docker Compose** (v24+)
 * **Go** (1.23+)
@@ -226,11 +244,14 @@ make go-vet
 # Run Go database integration tests (idempotency, rollback, concurrency)
 make test-integration
 
-# Test automated recovery pipeline end-to-end
-curl -X POST http://localhost:8080/api/v1/recovery/simulate \
-  -H "Content-Type: application/json" \
-  -d '{"amount": 8499, "currency": "INR", "error_code": "GATEWAY_TIMEOUT"}'
+# Drive a real event through the pipeline, then read the decision back
+BASE=http://localhost:8080; M=merch_aggressive
+curl -s -X POST $BASE/v1/merchants/$M/events/payment-failed -H 'Content-Type: application/json' \
+  -d '{"schema_version":"0.1.0","external_event_id":"evt_readme_1","merchant_id":"'$M'","payment_id":"pay_readme_1","customer_id":"c1","event_type":"payment.failed","amount":250000,"currency":"INR","method":"card","failure_reason":"Issuer declined","prior_attempts":0,"occurred_at":"2026-09-05T10:00:00Z"}'
+curl -s $BASE/v1/merchants/$M/payments/pay_readme_1/decisions | jq
 ```
+
+See **[Backend Running.md](./Backend%20Running.md)** for the complete verification checklist.
 
 ---
 
