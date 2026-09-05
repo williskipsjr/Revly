@@ -43,6 +43,9 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgres://revrec:revrec_dev_pw@postgres:5432/revrecovery?sslmode=disable}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       DIAGNOSIS_SERVICE_URL: ${DIAGNOSIS_SERVICE_URL:-http://diagnosis-service:8000}
+      # Phase 4: per-call LLM-diagnosis timeout (ms). On timeout (or any failure) the engine uses
+      # the deterministic rule table, so a slow/absent gateway never wedges ingestion.
+      DIAGNOSIS_TIMEOUT_MS: ${DIAGNOSIS_TIMEOUT_MS:-6000}
       # Empty = webhook signature verification disabled (dev only; logged at startup).
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       # Phase 3: the trained P(success) logistic-regression artifact, mounted read-only below.
@@ -67,6 +70,11 @@ services:
     build: ./diagnosis-service
     environment:
       DIAGNOSIS_SERVICE_PORT: "8000"
+      # Phase 4: AgentRouter (Anthropic-compatible) inference gateway. Bearer auth via
+      # ANTHROPIC_AUTH_TOKEN (ANTHROPIC_API_KEY accepted as an alias). Both empty = the diagnose
+      # endpoint 503s and the Go engine uses the deterministic rule-based fallback.
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-https://agentrouter.org}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-claude-sonnet-5}
     ports:
