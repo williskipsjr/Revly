@@ -39,10 +39,47 @@ SELECT
         WHERE pe2.payment_id = pe.payment_id
           AND a.action_type IN ('retry', 'delayed_retry')
           AND a.status IN ('pending', 'pending_confirmation', 'confirmed')
-    ), 0) AS retry_actions_taken
+    ), 0) AS retry_actions_taken,
+    -- Phase 5 platform policy (platform_policy singleton). LEFT JOINed and coalesced to the
+    -- policy.DefaultPlatform values so an absent row degrades to safe platform defaults rather
+    -- than failing the load (Postgres stays authoritative in the normal path).
+    coalesce(pp.global_kill_switch, false),
+    coalesce(pp.confidence_floor, 0.400)::float8,
+    coalesce(pp.max_retries_ceiling, 5),
+    coalesce(pp.min_cooldown_minutes, 5),
+    coalesce(pp.max_amount_ceiling, 100000000),
+    coalesce(pp.max_daily_action_cap, 50),
+    -- Phase 5 cooldown fact: minutes since the most recent retry-type action on this payment
+    -- (NULL when there is no prior retry — the cooldown rule then does not apply). Computed with
+    -- the DB clock so it never depends on the app's wall clock.
+    (SELECT EXTRACT(EPOCH FROM (now() - max(a.executed_at))) / 60.0
+       FROM actions a
+       JOIN decisions d        ON d.id = a.decision_id
+       JOIN payment_events pe3 ON pe3.id = d.payment_event_id
+      WHERE pe3.payment_id = pe.payment_id
+        AND a.action_type IN ('retry', 'delayed_retry')
+        AND a.status IN ('pending', 'pending_confirmation', 'confirmed')
+        AND a.executed_at IS NOT NULL) AS minutes_since_last_retry,
+    -- Phase 5 daily-cap fact: interventions (non-no_action) dispatched for THIS payment's
+    -- customer, scoped to this merchant, in the last 24h. Zero when the payment has no customer_id
+    -- (the action cannot be attributed to a customer).
+    coalesce((
+        SELECT count(*)
+          FROM actions a
+          JOIN decisions d        ON d.id = a.decision_id
+          JOIN payment_events pe4 ON pe4.id = d.payment_event_id
+          JOIN payments p4        ON p4.id = pe4.payment_id
+         WHERE p.customer_id IS NOT NULL
+           AND p4.customer_id = p.customer_id
+           AND p4.merchant_id = p.merchant_id
+           AND a.action_type <> 'no_action'
+           AND a.status IN ('pending', 'pending_confirmation', 'confirmed')
+           AND a.executed_at >= now() - interval '24 hours'
+    ), 0) AS customer_actions_today
 FROM payment_events pe
 JOIN payments p                 ON p.id = pe.payment_id
 JOIN merchant_policy_config mpc ON mpc.merchant_id = p.merchant_id
+LEFT JOIN platform_policy pp    ON pp.id = 'platform'
 WHERE pe.id = $1::uuid`
 
 	loadActionCostsSQL = `

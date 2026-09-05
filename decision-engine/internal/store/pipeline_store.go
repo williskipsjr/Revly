@@ -23,10 +23,16 @@ var _ pipeline.Repository = (*Store)(nil)
 // LoadContext assembles the decision context for one payment_event: the event/payment facts,
 // the merchant's policy config (including the Phase 2 kill_switch), the Postgres-derived
 // count of retry-type actions already taken on the payment, and the merchant's action costs.
+//
+// Phase 5 additionally loads the platform_policy singleton (global kill switch, confidence
+// floor, and override ceilings) and two Postgres-derived policy facts — the minutes since the
+// most recent retry (cooldown) and the count of interventions dispatched for this customer in
+// the last 24h (daily action cap). All facts come from Postgres; no Redis is consulted.
 func (s *Store) LoadContext(ctx context.Context, paymentEventID string) (pipeline.Context, error) {
 	var (
-		c         pipeline.Context
-		confFloor sql.NullFloat64
+		c                 pipeline.Context
+		confFloor         sql.NullFloat64
+		minutesSinceRetry sql.NullFloat64
 	)
 	err := s.db.QueryRowContext(ctx, loadContextSQL, paymentEventID).Scan(
 		&c.PaymentEventID,
@@ -45,6 +51,14 @@ func (s *Store) LoadContext(ctx context.Context, paymentEventID string) (pipelin
 		&confFloor,
 		&c.Policy.KillSwitch,
 		&c.RetryActionsTaken,
+		&c.Platform.GlobalKillSwitch,
+		&c.Platform.ConfidenceFloor,
+		&c.Platform.MaxRetriesCeiling,
+		&c.Platform.MinCooldownMinutes,
+		&c.Platform.MaxAmountCeiling,
+		&c.Platform.MaxDailyActionCap,
+		&minutesSinceRetry,
+		&c.CustomerActionsToday,
 	)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -55,6 +69,12 @@ func (s *Store) LoadContext(ctx context.Context, paymentEventID string) (pipelin
 	if confFloor.Valid {
 		v := confFloor.Float64
 		c.Policy.ConfidenceFloorOverride = &v
+	}
+	// A NULL minutes-since-retry means there is no prior retry, so the cooldown rule does not
+	// apply; a value means there is one and it is that many minutes old.
+	if minutesSinceRetry.Valid {
+		c.HasPriorRetry = true
+		c.MinutesSinceLastRetry = minutesSinceRetry.Float64
 	}
 
 	costs, err := s.loadActionCosts(ctx, c.MerchantID)

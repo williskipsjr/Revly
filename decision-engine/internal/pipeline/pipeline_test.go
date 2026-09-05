@@ -9,6 +9,7 @@ import (
 
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/diagnosis"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/domain"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/policy"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/successmodel"
 )
 
@@ -49,13 +50,24 @@ func baseContext() Context {
 		PriorAttempts:  0,
 		Policy: MerchantPolicy{
 			MaxRetries:      3,
+			CooldownMinutes: 30,
 			MinERVThreshold: 500, // ₹5
 			KillSwitch:      false,
+		},
+		// A realistic platform policy: the 0.4 confidence floor and ceilings wide enough that the
+		// base (healthy) case is unaffected. Individual Phase-5 tests tighten what they exercise.
+		Platform: policy.Platform{
+			ConfidenceFloor:    0.40,
+			MaxRetriesCeiling:  5,
+			MinCooldownMinutes: 0,
+			MaxAmountCeiling:   0, // no platform amount cap in the base case
+			MaxDailyActionCap:  0, // no platform daily cap in the base case
 		},
 		ActionCosts: map[domain.Action]ActionCost{
 			domain.ActionRetry:        {MonetaryCost: 200, FrictionWeight: 0.4},
 			domain.ActionDelayedRetry: {MonetaryCost: 200, FrictionWeight: 0.3},
 			domain.ActionNotify:       {MonetaryCost: 20, FrictionWeight: 0.5},
+			domain.ActionEscalate:     {MonetaryCost: 5000, FrictionWeight: 0.3},
 			domain.ActionNoAction:     {MonetaryCost: 0, FrictionWeight: 0},
 		},
 	}
@@ -320,6 +332,181 @@ func TestNewRunner_NilDiagnoserKeepsRuleBased(t *testing.T) {
 	}
 	if repo.decision.DiagnosisModelVersion != diagnosis.ModelVersion {
 		t.Fatalf("nil diagnoser model version = %q, want %q", repo.decision.DiagnosisModelVersion, diagnosis.ModelVersion)
+	}
+}
+
+// TestProcess_FraudRoutesToHumanReview: a fraud_suspected diagnosis blocks every autonomous
+// intervention and routes to a human — the decision is HUMAN_REVIEW with chosen escalate, the
+// journey hard-stops at STOPPED (skipping RECOVERY_ELIGIBLE), and nothing is dispatched.
+func TestProcess_FraudRoutesToHumanReview(t *testing.T) {
+	c := baseContext()
+	c.FailureReason = "transaction flagged as suspected fraud" // rule table → fraud_suspected
+	repo := &fakeRepo{ctx: c}
+	r := NewRunner(repo, nil, nil, nil)
+
+	if err := r.Process(context.Background(), "pe_1"); err != nil {
+		t.Fatalf("Process errored: %v", err)
+	}
+	if repo.decision.RootCause != domain.RootFraudSuspected {
+		t.Fatalf("root cause = %s, want fraud_suspected", repo.decision.RootCause)
+	}
+	if repo.decision.PolicyCheckResult != domain.PolicyHumanReview {
+		t.Fatalf("policy result = %s, want HUMAN_REVIEW", repo.decision.PolicyCheckResult)
+	}
+	if repo.decision.ChosenAction != domain.ActionEscalate {
+		t.Fatalf("chosen = %s, want escalate", repo.decision.ChosenAction)
+	}
+	if repo.decision.RecoveryState != domain.StateStopped {
+		t.Fatalf("recovery_state = %s, want STOPPED", repo.decision.RecoveryState)
+	}
+	if repo.execution != nil {
+		t.Fatal("HUMAN_REVIEW must not dispatch an action")
+	}
+	for _, s := range repo.decision.StateHistory {
+		if s == domain.StateRecoveryEligible {
+			t.Fatalf("fraud hard-stop must skip RECOVERY_ELIGIBLE, got %v", repo.decision.StateHistory)
+		}
+	}
+}
+
+// TestProcess_ConfidenceFloorLimitsToNotify: a diagnosis below the confidence floor disallows
+// autonomous retries; only notify/no_action survive, so a retry is never chosen.
+func TestProcess_ConfidenceFloorLimitsToNotify(t *testing.T) {
+	stub := &stubDiagnoser{out: diagnosis.Diagnosis{
+		RootCause:        domain.RootTemporaryBankDecline,
+		Confidence:       0.20, // below the 0.40 floor
+		Rationale:        "low-confidence transient guess",
+		CandidateActions: []domain.Action{domain.ActionRetry, domain.ActionDelayedRetry, domain.ActionNotify, domain.ActionNoAction},
+		ModelVersion:     "test",
+		Source:           diagnosis.SourceLLM,
+	}}
+	repo := &fakeRepo{ctx: baseContext(), execCreated: true}
+	r := NewRunner(repo, nil, nil, nil, WithDiagnoser(stub))
+
+	if err := r.Process(context.Background(), "pe_1"); err != nil {
+		t.Fatalf("Process errored: %v", err)
+	}
+	if domain.IsRetry(repo.decision.ChosenAction) {
+		t.Fatalf("below confidence floor but chose a retry: %s", repo.decision.ChosenAction)
+	}
+	for _, cand := range repo.decision.Candidates {
+		if domain.IsRetry(cand.Action) && cand.PolicyResult != domain.PolicyBlock {
+			t.Errorf("retry candidate %s should be BLOCKED below the floor, got %s", cand.Action, cand.PolicyResult)
+		}
+	}
+}
+
+// TestProcess_AmountCeilingBlocksMoneyMovement: above the merchant's amount ceiling, automated
+// money-movement actions (retry/delayed_retry) are blocked; a harmless notify is chosen instead.
+func TestProcess_AmountCeilingBlocksMoneyMovement(t *testing.T) {
+	c := baseContext()
+	c.Amount = 10_000_000              // ₹100,000
+	c.Policy.AmountCeiling = 5_000_000 // ₹50,000
+	c.Platform.MaxAmountCeiling = 100_000_000
+	repo := &fakeRepo{ctx: c, execCreated: true}
+	r := NewRunner(repo, nil, nil, nil)
+
+	if err := r.Process(context.Background(), "pe_1"); err != nil {
+		t.Fatalf("Process errored: %v", err)
+	}
+	if domain.IsRetry(repo.decision.ChosenAction) {
+		t.Fatalf("amount over ceiling but chose a money-movement retry: %s", repo.decision.ChosenAction)
+	}
+	for _, cand := range repo.decision.Candidates {
+		if domain.IsRetry(cand.Action) && cand.PolicyResult != domain.PolicyBlock {
+			t.Errorf("retry candidate %s should be BLOCKED over the ceiling, got %s", cand.Action, cand.PolicyResult)
+		}
+	}
+}
+
+// TestProcess_CooldownBlocksRetry: with a recent prior retry inside the cooldown window, retry
+// actions are blocked and a non-retry action is chosen.
+func TestProcess_CooldownBlocksRetry(t *testing.T) {
+	c := baseContext()
+	c.Policy.CooldownMinutes = 30
+	c.HasPriorRetry = true
+	c.MinutesSinceLastRetry = 5 // inside the 30-minute window
+	repo := &fakeRepo{ctx: c, execCreated: true}
+	r := NewRunner(repo, nil, nil, nil)
+
+	if err := r.Process(context.Background(), "pe_1"); err != nil {
+		t.Fatalf("Process errored: %v", err)
+	}
+	if domain.IsRetry(repo.decision.ChosenAction) {
+		t.Fatalf("inside cooldown but chose a retry: %s", repo.decision.ChosenAction)
+	}
+	for _, cand := range repo.decision.Candidates {
+		if domain.IsRetry(cand.Action) && cand.PolicyResult != domain.PolicyBlock {
+			t.Errorf("retry candidate %s should be BLOCKED inside cooldown, got %s", cand.Action, cand.PolicyResult)
+		}
+	}
+}
+
+// TestProcess_DailyCapStopsAllInterventions: once the customer hits the daily action cap, every
+// intervention is blocked, so the pipeline falls back to no_action and STOPPED.
+func TestProcess_DailyCapStopsAllInterventions(t *testing.T) {
+	c := baseContext()
+	c.Policy.DailyActionCap = 2
+	c.Platform.MaxDailyActionCap = 50
+	c.CustomerActionsToday = 2 // at the cap
+	repo := &fakeRepo{ctx: c}
+	r := NewRunner(repo, nil, nil, nil)
+
+	if err := r.Process(context.Background(), "pe_1"); err != nil {
+		t.Fatalf("Process errored: %v", err)
+	}
+	if repo.decision.ChosenAction != domain.ActionNoAction {
+		t.Fatalf("daily cap reached: chosen = %s, want no_action", repo.decision.ChosenAction)
+	}
+	if repo.decision.RecoveryState != domain.StateStopped {
+		t.Fatalf("daily cap reached: recovery_state = %s, want STOPPED", repo.decision.RecoveryState)
+	}
+	if repo.execution != nil {
+		t.Fatal("daily cap reached: nothing should be dispatched")
+	}
+	assertHasBlockedCandidate(t, repo.decision.PolicyChecksJSON)
+}
+
+// TestProcess_MerchantOverrideChangesBehavior is the Phase 5 DoD: on the IDENTICAL event, a
+// merchant-specific confidence-floor override changes the outcome. Merchant A (floor 0.40)
+// allows a retry at diagnosis confidence 0.50; Merchant B raises its floor to 0.60, which blocks
+// the retry — so the same event yields a different chosen action purely from merchant policy.
+func TestProcess_MerchantOverrideChangesBehavior(t *testing.T) {
+	newStub := func() *stubDiagnoser {
+		return &stubDiagnoser{out: diagnosis.Diagnosis{
+			RootCause:        domain.RootTemporaryBankDecline,
+			Confidence:       0.50,
+			Rationale:        "borderline-confidence transient decline",
+			CandidateActions: []domain.Action{domain.ActionRetry, domain.ActionDelayedRetry, domain.ActionNotify, domain.ActionNoAction},
+			ModelVersion:     "test",
+			Source:           diagnosis.SourceLLM,
+		}}
+	}
+
+	// Merchant A: no override — platform floor 0.40 applies, 0.50 clears it → a retry is allowed.
+	repoA := &fakeRepo{ctx: baseContext(), execCreated: true}
+	if err := NewRunner(repoA, nil, nil, nil, WithDiagnoser(newStub())).Process(context.Background(), "pe_1"); err != nil {
+		t.Fatalf("merchant A Process: %v", err)
+	}
+
+	// Merchant B: identical event, but raises its confidence floor to 0.60 → 0.50 fails it, so
+	// retries are blocked and a non-retry action is chosen.
+	cB := baseContext()
+	floor := 0.60
+	cB.Policy.ConfidenceFloorOverride = &floor
+	repoB := &fakeRepo{ctx: cB, execCreated: true}
+	if err := NewRunner(repoB, nil, nil, nil, WithDiagnoser(newStub())).Process(context.Background(), "pe_1"); err != nil {
+		t.Fatalf("merchant B Process: %v", err)
+	}
+
+	if !domain.IsRetry(repoA.decision.ChosenAction) {
+		t.Fatalf("merchant A (floor 0.40) should allow a retry, chose %s", repoA.decision.ChosenAction)
+	}
+	if domain.IsRetry(repoB.decision.ChosenAction) {
+		t.Fatalf("merchant B (floor 0.60) should block the retry, chose %s", repoB.decision.ChosenAction)
+	}
+	if repoA.decision.ChosenAction == repoB.decision.ChosenAction {
+		t.Fatal("merchant override did not change behavior on the identical event")
 	}
 }
 

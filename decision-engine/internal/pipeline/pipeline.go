@@ -35,9 +35,10 @@ type ActionCost struct {
 	FrictionWeight float64
 }
 
-// MerchantPolicy is the resolved policy configuration for a merchant. Phase 2 consults only
-// MaxRetries, MinERVThreshold, and KillSwitch; the other fields are loaded for completeness
-// and for the Phase 5 full engine.
+// MerchantPolicy is a merchant's RAW policy configuration as stored in merchant_policy_config
+// — the values before platform ceilings are applied. Phase 5 resolves it against Context.Platform
+// (policy.ResolveMerchantPolicy) into the bounded values the engine enforces, so a merchant can
+// only make policy safer, never weaker (PLAN.md §6).
 type MerchantPolicy struct {
 	MaxRetries              int
 	CooldownMinutes         int
@@ -64,6 +65,19 @@ type Context struct {
 	// dispatched for this payment (Postgres-derived). Added to PriorAttempts it gives the
 	// effective attempt count the max-retries constraint checks against — no Redis involved.
 	RetryActionsTaken int
+
+	// Phase 5 policy facts, all Postgres-derived (never Redis — PLAN.md §15):
+	//   - HasPriorRetry / MinutesSinceLastRetry feed the cooldown rule (from the most recent
+	//     retry/delayed_retry action's executed_at for this payment).
+	//   - CustomerActionsToday feeds the daily action cap (interventions dispatched for this
+	//     payment's customer, this merchant, in the last 24h).
+	HasPriorRetry         bool
+	MinutesSinceLastRetry float64
+	CustomerActionsToday  int
+
+	// Platform is the platform-wide policy (platform_policy singleton): global kill switch,
+	// confidence safety floor, and the ceilings that bound this merchant's overrides.
+	Platform policy.Platform
 
 	Policy      MerchantPolicy
 	ActionCosts map[domain.Action]ActionCost
@@ -250,20 +264,47 @@ func (r *Runner) Process(ctx context.Context, paymentEventID string) error {
 	}
 	ranked := erv.Rank(ervInputs)
 
-	// 3. Policy-check each candidate in ERV order; the chosen action is the highest-ERV
-	//    candidate the policy engine ALLOWs. no_action always survives, so chosen is never nil.
+	// 3. Resolve the merchant's raw policy config against the platform ceilings once (a merchant
+	//    can only tighten safety, never loosen it — PLAN.md §6), then policy-check each candidate
+	//    in ERV order against the full Section-6 constraint set. The diagnosis's root cause and
+	//    confidence gate the categorical rules (fraud hard-stop, confidence floor); cooldown and
+	//    daily-cap facts are Postgres-derived (never Redis).
+	resolved := policy.ResolveMerchantPolicy(policy.MerchantConfig{
+		MaxRetries:              c.Policy.MaxRetries,
+		CooldownMinutes:         c.Policy.CooldownMinutes,
+		MinERVThreshold:         c.Policy.MinERVThreshold,
+		DailyActionCap:          c.Policy.DailyActionCap,
+		AmountCeiling:           c.Policy.AmountCeiling,
+		ConfidenceFloorOverride: c.Policy.ConfidenceFloorOverride,
+		KillSwitch:              c.Policy.KillSwitch,
+	}, c.Platform)
+
 	candRecords := make([]CandidateRecord, 0, len(ranked))
-	var chosen *erv.Candidate
-	var chosenPolicy policy.Result
+	// chosenAllow is the highest-ERV ALLOWed candidate (Phase-2 rule; no_action always ALLOWs so
+	// this is never nil); humanReview is the highest-ERV candidate a hard-stop gate routed to a
+	// human (fraud / amount-ceiling escalation → HUMAN_REVIEW).
+	var chosenAllow, humanReview *erv.Candidate
+	var chosenAllowRes, humanReviewRes policy.Result
 	for i := range ranked {
 		cand := ranked[i]
 		pr := policy.Evaluate(policy.Input{
-			Action:            cand.Action,
-			ERV:               cand.ERV,
-			EffectiveAttempts: effectiveAttempts,
-			MaxRetries:        c.Policy.MaxRetries,
-			MinERVThreshold:   c.Policy.MinERVThreshold,
-			KillSwitch:        c.Policy.KillSwitch,
+			Action:                cand.Action,
+			ERV:                   cand.ERV,
+			EffectiveAttempts:     effectiveAttempts,
+			RootCause:             diag.RootCause,
+			Confidence:            diag.Confidence,
+			ConfidenceFloor:       resolved.ConfidenceFloor,
+			Amount:                c.Amount,
+			AmountCeiling:         resolved.AmountCeiling,
+			CooldownMinutes:       resolved.CooldownMinutes,
+			HasPriorRetry:         c.HasPriorRetry,
+			MinutesSinceLastRetry: c.MinutesSinceLastRetry,
+			MaxRetries:            resolved.MaxRetries,
+			DailyActionCap:        resolved.DailyActionCap,
+			CustomerActionsToday:  c.CustomerActionsToday,
+			MinERVThreshold:       resolved.MinERVThreshold,
+			KillSwitch:            resolved.KillSwitch,
+			GlobalKillSwitch:      resolved.GlobalKillSwitch,
 		})
 		candRecords = append(candRecords, CandidateRecord{
 			Action:            cand.Action,
@@ -274,32 +315,53 @@ func (r *Runner) Process(ctx context.Context, paymentEventID string) error {
 			ERV:               cand.ERV,
 			PolicyResult:      pr.Decision,
 		})
-		if chosen == nil && pr.Decision == domain.PolicyAllow {
-			chosen = &ranked[i]
-			chosenPolicy = pr
+		if chosenAllow == nil && pr.Decision == domain.PolicyAllow {
+			chosenAllow = &ranked[i]
+			chosenAllowRes = pr
+		}
+		if humanReview == nil && pr.Decision == domain.PolicyHumanReview {
+			humanReview = &ranked[i]
+			humanReviewRes = pr
 		}
 	}
-	if chosen == nil {
+
+	// Selection precedence (PLAN.md §6/§6a): a real ALLOWed intervention wins (normal recovery);
+	// otherwise, if a hard-stop gate routed a candidate to a human, prefer HUMAN_REVIEW over
+	// silently doing nothing (this is how a fraud_suspected diagnosis surfaces as escalation);
+	// otherwise fall back to no_action. no_action always ALLOWs, so a choice always exists.
+	var chosen *erv.Candidate
+	var chosenPolicy policy.Result
+	switch {
+	case chosenAllow != nil && chosenAllow.Action != domain.ActionNoAction:
+		chosen, chosenPolicy = chosenAllow, chosenAllowRes
+	case humanReview != nil:
+		chosen, chosenPolicy = humanReview, humanReviewRes
+	case chosenAllow != nil:
+		chosen, chosenPolicy = chosenAllow, chosenAllowRes // no_action fallback
+	default:
 		// Unreachable given no_action always passes, but never proceed without a decision.
 		return fmt.Errorf("pipeline: no policy-allowed candidate for %s (candidates=%d)", paymentEventID, len(ranked))
 	}
 
 	chosenAction := chosen.Action
-	willDispatch := chosenAction != domain.ActionNoAction
 
-	// 4. Drive the state machine to the decision point (PLAN.md §6a).
+	// 4. Drive the state machine to the decision point (PLAN.md §6a). A kill switch or a
+	//    HUMAN_REVIEW verdict is a hard block: the payment is not recovery-eligible, so it goes
+	//    DIAGNOSED → STOPPED (skipping RECOVERY_ELIGIBLE) and nothing is dispatched — for
+	//    HUMAN_REVIEW a human takes over the escalated case.
+	hardBlocked := resolved.KillSwitch || resolved.GlobalKillSwitch || chosenPolicy.Decision == domain.PolicyHumanReview
 	var decisionState domain.RecoveryState
+	var willDispatch bool
 	switch {
-	case c.Policy.KillSwitch:
-		// Operator hard-stop: the payment is not recovery-eligible. DIAGNOSED → STOPPED.
+	case hardBlocked:
 		m.MustTo(domain.StateStopped)
 		decisionState = domain.StateStopped
-		willDispatch = false
 	default:
 		m.MustTo(domain.StateRecoveryEligible)
 		m.MustTo(domain.StateActionSelected)
-		if willDispatch {
+		if chosenAction != domain.ActionNoAction {
 			decisionState = domain.StateActionSelected
+			willDispatch = true
 		} else {
 			// no_action was the economically best choice: nothing to dispatch, stop.
 			m.MustTo(domain.StateStopped)
