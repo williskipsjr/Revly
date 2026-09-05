@@ -1,7 +1,6 @@
 "use client";
 
 import React from "react";
-import Image from "next/image";
 
 export default function Footer() {
   return (
@@ -168,9 +167,11 @@ export default function Footer() {
 
           {/* Giant Wordmark */}
           <div className="flex flex-col items-center gap-[4%] text-white sm:flex-row sm:justify-center">
-            <div className="relative size-[64px] sm:size-[100px] shrink-0">
-              <Image src="/revly.png" alt="Revly Logo" fill className="object-contain rounded-2xl" />
-            </div>
+            <img
+              src="/revly-icon-white@4x.png"
+              alt="Revly Icon"
+              className="w-[11%] max-w-[170px] min-w-[64px] h-auto object-contain shrink-0 select-none"
+            />
             <span
               className="t-display font-semibold leading-none tracking-[-0.04em] text-white select-none"
               style={{ fontSize: "clamp(3.5rem, 14vw, 15rem)" }}
