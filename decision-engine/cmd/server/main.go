@@ -20,6 +20,7 @@ import (
 
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/config"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/db"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/diagnosis/llm"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/executor"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/ingest"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/pipeline"
@@ -51,6 +52,11 @@ func main() {
 	// stays a code path fully separate from diagnosis either way (PLAN.md §5/§7).
 	scorer := loadScorer(cfg.SuccessModelPath)
 
+	// Phase 4: choose the diagnoser. When DIAGNOSIS_SERVICE_URL is set, use the LLM-backed
+	// diagnoser (which falls back to the rule table on any failure); otherwise the pipeline
+	// uses the deterministic rule table directly. Either way diagnosis never stalls the plane.
+	diagOpts := loadDiagnoserOpts(cfg, logger)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler(cfg, database))
 	mux.HandleFunc("GET /version", versionHandler(cfg))
@@ -72,7 +78,7 @@ func main() {
 		// ingested event, sourcing P(success) from the statistical scorer. External action calls
 		// are mocked (executor.MockDispatcher); Postgres is the only durable store — no Redis
 		// dependency (PLAN.md §15).
-		runner := pipeline.NewRunner(st, executor.MockDispatcher{}, scorer, logger)
+		runner := pipeline.NewRunner(st, executor.MockDispatcher{}, scorer, logger, diagOpts...)
 		mux.HandleFunc(
 			"POST /v1/merchants/{id}/events/payment-failed",
 			ingest.NewHandler(st, runner, cfg.WebhookSecret, logger),
@@ -153,6 +159,22 @@ func loadScorer(path string) successmodel.Scorer {
 	}
 	slog.Info("loaded statistical P(success) model", "path", path, "version", model.Version())
 	return model
+}
+
+// loadDiagnoserOpts returns the pipeline options selecting the Phase-4 LLM diagnoser when
+// DIAGNOSIS_SERVICE_URL is configured, or none (rule-table default) otherwise. Mirrors
+// loadScorer: the active diagnosis path is always logged, never a mystery. Note the LLM
+// diagnoser still falls back to the rule table per-call if the service is unreachable — so a
+// configured-but-down service degrades gracefully rather than failing decisions.
+func loadDiagnoserOpts(cfg config.Config, logger *slog.Logger) []pipeline.Option {
+	if cfg.DiagnosisServiceURL == "" {
+		slog.Warn("DIAGNOSIS_SERVICE_URL not set: using deterministic rule-based diagnosis")
+		return nil
+	}
+	slog.Info("LLM diagnosis enabled (rule-based fallback on any failure)",
+		"service_url", cfg.DiagnosisServiceURL, "timeout", cfg.DiagnosisTimeout)
+	d := llm.New(cfg.DiagnosisServiceURL, cfg.DiagnosisTimeout, logger)
+	return []pipeline.Option{pipeline.WithDiagnoser(d)}
 }
 
 type healthResponse struct {
