@@ -1,283 +1,407 @@
 <p align="center">
-  <img src="assets/revly-banner.png" alt="Revly - Revenue Recovery Intelligence" width="100%" style="border-radius: 12px;" />
+  <img src="assets/revly-banner.png" alt="Revly — Revenue Recovery Intelligence" width="100%" style="border-radius: 12px;" />
 </p>
 
 <div align="center">
 
-# Revly · Autonomous AI Revenue Recovery Decision Platform
+# Revly — Autonomous Revenue Recovery Decision Platform
 
-### *Razorpay AI Buildathon — Track 03: Autonomous Revenue Recovery*
+**Razorpay AI Buildathon · Track 03 — Autonomous Revenue Recovery**
 
-<p align="center">
-  <a href="https://golang.org"><img src="https://img.shields.io/badge/Go_1.23-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go" /></a>
-  <a href="https://fastapi.tiangolo.com"><img src="https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI" /></a>
-  <a href="https://python.org"><img src="https://img.shields.io/badge/Python_3.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" /></a>
-  <a href="https://nextjs.org"><img src="https://img.shields.io/badge/Next.js_14-000000?style=for-the-badge&logo=nextdotjs&logoColor=white" alt="Next.js" /></a>
-  <a href="https://react.dev"><img src="https://img.shields.io/badge/React_18-61DAFB?style=for-the-badge&logo=react&logoColor=black" alt="React" /></a>
-  <a href="https://typescriptlang.org"><img src="https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" /></a>
-  <a href="https://tailwindcss.com"><img src="https://img.shields.io/badge/Tailwind_CSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white" alt="Tailwind CSS" /></a>
-  <a href="https://postgresql.org"><img src="https://img.shields.io/badge/PostgreSQL_16-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL" /></a>
-  <a href="https://redis.io"><img src="https://img.shields.io/badge/Redis_7-DC382D?style=for-the-badge&logo=redis&logoColor=white" alt="Redis" /></a>
-  <a href="https://ai.google.dev"><img src="https://img.shields.io/badge/Google_Gemini-8E75B2?style=for-the-badge&logo=google&logoColor=white" alt="Gemini" /></a>
-  <a href="https://razorpay.com"><img src="https://img.shields.io/badge/Razorpay_API-0C2340?style=for-the-badge&logo=razorpay&logoColor=3395FF" alt="Razorpay" /></a>
-  <a href="https://docker.com"><img src="https://img.shields.io/badge/Docker_Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker" /></a>
-</p>
-
-**Revly** is a production-grade, AI-assisted, bounded revenue-recovery platform designed for the Razorpay ecosystem. It detects checkout and subscription revenue at risk, diagnoses root-cause failure telemetry, computes mathematical **Expected Recovery Value (ERV)**, selects optimal interventions, and executes safe recovery actions under non-bypassable deterministic policy rules.
+<a href="https://skillicons.dev">
+  <img src="https://skillicons.dev/icons?i=go,py,fastapi,nextjs,react,ts,tailwind,postgres,redis,docker,prometheus,grafana&perline=12" alt="Tech stack" />
+</a>
 
 </div>
 
----
+Revly turns failed payments into recovered revenue — safely. It ingests failed-payment events,
+diagnoses the root cause, computes the **Expected Recovery Value (ERV)** of each possible
+intervention, and executes the best one **only when the economics are positive** and a deterministic
+policy layer approves it. Every financial action is bounded, idempotent, and recorded in a single
+PostgreSQL source of truth.
 
-> ### 🛡️ The Governing System Invariant
+The design principle is a strict, non-bypassable pipeline:
+
+> **LLM proposes → ML scores P(success) → ERV ranks → Policy approves → Executor acts → Postgres records.**
 >
-> $$\mathbf{\text{LLM Proposes}} \longrightarrow \mathbf{\text{ML Scores } P(\text{success})} \longrightarrow \mathbf{\text{ERV Ranks}} \longrightarrow \mathbf{\text{Policy Approves}} \longrightarrow \mathbf{\text{Go Executes}} \longrightarrow \mathbf{\text{Postgres Records}}$$
->
-> * **No layer ever skips the one after it.**
-> * The LLM is **strictly advisory**: it suggests candidate recovery strategies but never initiates financial transfers, never computes probabilities, and never touches payment credentials.
-> * Financial execution is bounded, idempotent, and backed by a single durable PostgreSQL source of truth.
+> No layer skips the one after it. The LLM is strictly advisory: it suggests candidate strategies
+> but never computes probabilities, never selects the executed action, and never touches payment
+> credentials.
 
 ---
 
-## ⚡ Core Value Proposition
+## Why it exists
 
-Modern e-commerce and subscription merchants lose **5% to 15% of gross merchandise value** to false-positive payment declines, transient banking downtime, mandate expiry, and liquidity gaps.
+Merchants lose a meaningful share of gross revenue to failed payments — false-positive declines,
+transient bank/gateway downtime, mandate expiry, and salary-cycle liquidity gaps. The default
+industry response is **blind exponential retries**, which spam customers, exhaust gateway limits,
+and drive abandonment.
 
-Standard recovery solutions rely on **blind exponential retries** — triggering repeated customer bank SMS alerts, exhausting gateway rate limits, and irritating customers into abandoning carts.
+Revly replaces blind retries with economic decisions:
 
-**Revly replaces blind retries with economic and deterministic intelligence:**
-1. **Context-Aware Diagnosis:** Distinguishes temporary gateway 504 timeouts from permanent card expiry and salary-cycle liquidity gaps.
-2. **Economic Optimization (ERV):** Intervenes only when net expected recovery exceeds merchant fees and customer friction costs.
-3. **Multi-Channel Fallbacks:** Dynamically routes failed checkouts to alternate payment rails (UPI QR, WhatsApp smart pay links, Mandate re-auth).
-4. **Guaranteed Idempotency:** Eliminates double-charges via atomic PostgreSQL unique constraints and Redis coordination.
-
----
-
-## 📐 Mathematical Formulation: Expected Recovery Value (ERV)
-
-Revly does not optimize for raw retry volume; it optimizes for **Net Merchant Value**. For each proposed candidate action $a \in \mathcal{A}$:
-
-$$\text{ERV}(a) = \Big( P(\text{success} \mid \mathbf{x}, a) \times \text{Amount} \Big) - C_{\text{direct}}(a) - C_{\text{friction}}(a)$$
-
-* **$P(\text{success} \mid \mathbf{x}, a)$**: Calibrated probability output from the L2 logistic regression and telemetry decay model (~30 weighted signals).
-* **$\text{Amount}$**: Gross transaction value at risk.
-* **$C_{\text{direct}}(a)$**: Gateway processing cost, SMS API fees, or WhatsApp notification charges.
-* **$C_{\text{friction}}(a)$**: Customer relationship cost (fatigue penalty, opt-out risk, churn probability).
-* **Deterministic Stop Rule**: If $\max_{a} \text{ERV}(a) \le 0$, Revly terminates the recovery lifecycle immediately to protect customer trust.
+- **Root-cause diagnosis** — separates a transient issuer decline from permanent card expiry from a
+  liquidity gap, so the response fits the failure.
+- **Economic optimization (ERV)** — intervenes only when expected recovery exceeds fees and customer
+  friction; otherwise it stops.
+- **Multi-channel fallbacks** — retry, delayed retry, alternate method, payment link, notify,
+  escalate, or no-action.
+- **Guaranteed idempotency** — atomic Postgres constraints plus optional Redis coordination make
+  double-charges structurally impossible.
 
 ---
 
-## 🏛️ System Architecture: The Three Planes
+## Expected Recovery Value (ERV)
+
+Revly optimizes **net merchant value**, not retry volume. For each candidate action *a*:
+
+$$\text{ERV}(a) = \big( P(\text{success} \mid \mathbf{x}, a) \times \text{Amount} \big) - C_{\text{direct}}(a) - C_{\text{friction}}(a)$$
+
+- **P(success | x, a)** — calibrated probability from the L2 logistic-regression model (with a
+  heuristic fallback when no artifact is loaded).
+- **Amount** — gross value at risk.
+- **C_direct(a)** — gateway fees, SMS/WhatsApp notification cost.
+- **C_friction(a)** — customer-relationship cost (fatigue, opt-out risk).
+- **Stop rule** — if `max_a ERV(a) ≤ 0`, Revly takes no action and ends the recovery lifecycle to
+  protect customer trust.
+
+---
+
+## The agent in action
+
+> The figures below are **illustrative demo output**, not production results.
 
 ```
- ┌───────────────────────────────────────────────────────────────────────────┐
- │                            INTELLIGENCE PLANE                             │
- │   Python 3.12 / FastAPI                                                   │
- │   • LLM Diagnosis (Gemini / Claude)  • Feature Store & Prior Aggregator   │
- │   • Strategy Candidate Proposer      • P(success) ML Logistic Regression  │
- └─────────────────────────────────────┬─────────────────────────────────────┘
-                                       │ Advisory Payloads (Validated JSON)
-                                       ▼
- ┌───────────────────────────────────────────────────────────────────────────┐
- │                              DECISION PLANE                               │
- │   Go 1.23 Engine                                                          │
- │   • ERV Optimization & Ranking       • Merchant Boundary Configuration    │
- │   • Deterministic Policy Guardrails  • Idempotency & State Machine        │
- └─────────────────────────────────────┬─────────────────────────────────────┘
-                                       │ Approved Action Token
-                                       ▼
- ┌───────────────────────────────────────────────────────────────────────────┐
- │                             EXECUTION PLANE                               │
- │   Go 1.23 Worker Engine                                                   │
- │   • Razorpay API Sandbox Dispatcher  • Multi-Channel Gateway Router       │
- │   • Atomic Ledger Audit Logger       • Dynamic Backoff Scheduler          │
- └───────────────────┬───────────────────────────────────┬───────────────────┘
-                     │                                   │
-                     ▼                                   ▼
-        ┌─────────────────────────┐         ┌─────────────────────────┐
-        │  PostgreSQL 16 (Durable)│         │ Redis 7 (Coordination)  │
-        │  • Event Store & Locks  │         │ • Cooldown Rate Limits  │
-        │  • Immutable Audit Log  │         │ • Ephemeral State TTLs  │
-        └─────────────────────────┘         └─────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│ REVENUE RECOVERY AGENT                    ● ACTIVE    │
+│                                                      │
+│  47 events analyzed       31 actions taken           │
+│  ₹3.84L at risk           ₹2.17L recovered            │
+│  18 actions prevented     12 stopped by economics    │
+└──────────────────────────────────────────────────────┘
 ```
 
-### Plane Isolation & Failure Tolerance
-* **If the Intelligence Plane drops:** The Go Decision Plane falls back to conservative deterministic recovery heuristics with zero downtime.
-* **If Redis drops:** Ephemeral cooldowns fall back to PostgreSQL database timestamps; financial correctness is never compromised.
-* **Single Source of Truth:** PostgreSQL stores immutable state transitions, ledger events, and idempotency locks.
+A single event moving through the pipeline:
+
+```
+AGENT ACTIVITY
+
+10:42:31  Payment ₹8,499 failed
+          ↓
+10:42:32  Diagnosed: temporary issuer decline
+          ↓
+10:42:32  Evaluated 4 interventions
+          ↓
+10:42:32  Retry selected — ERV ₹7,561
+          ↓
+11:12:03  Retry succeeded
+          ↓
+11:12:03  ₹8,499 recovered
+```
 
 ---
 
-## 🖥️ Frontend Surfaces
+## How the agent decides
 
-| Surface | Tech Stack | Description |
-|---|---|---|
-| **Landing Page** (`frontend/landing-page`) | Next.js 14, Tailwind CSS, TypeScript, HTML5 Canvas | High-fidelity **SentinelX-inspired** showcase featuring 15 technical sections: interactive PTY live recovery terminal, 3D surface plot wireframes, architectural blueprints, and failure mode case studies. |
-| **Merchant Dashboard** (`dashboard/`) | Next.js 14, React 18, Tailwind CSS, TypeScript | Operator cockpit providing real-time telemetry: active recovery pipelines, ERV decision breakdown, live audit timeline, and policy kill-switches. |
+```mermaid
+flowchart TD
+    A[Failed payment event] --> B[Diagnose root cause]
+    B -->|LLM via AgentRouter| B1[LLM diagnosis]
+    B -->|LLM down / no key| B2[Deterministic rule table]
+    B1 --> C[Propose candidate actions]
+    B2 --> C
+    C --> D[Score P success per action - ML logistic regression]
+    D --> E["Compute ERV = P x Amount - cost - friction"]
+    E --> F{max ERV greater than 0 ?}
+    F -->|No| G[No action - protect customer trust]
+    F -->|Yes| H[Rank candidates by ERV]
+    H --> I{Policy guardrails pass ?}
+    I -->|Blocked| J[Escalate / hold - audited]
+    I -->|Allow| K[Execute chosen action - idempotent]
+    K --> L{Outcome known ?}
+    L -->|Yes| M[Record recovered / failed]
+    L -->|Ambiguous| N[pending_confirmation]
+    N --> O[Reconciliation loop settles - never blind-retries]
+    O --> M
+    M --> P[(PostgreSQL - single source of truth)]
+    G --> P
+    J --> P
+```
+
+Policy guardrails are **deterministic and non-bypassable**: max retries, cooldown windows, minimum
+ERV threshold, daily action cap, amount ceiling, confidence floor, fraud hard-stop, and a
+merchant/global **kill switch**.
 
 ---
 
-## 📂 Repository Structure
+## System architecture
+
+Three isolated planes, each degrading safely if the one above it is unavailable.
+
+```mermaid
+flowchart TB
+    subgraph IP["Intelligence Plane · Python 3.12 / FastAPI :8000"]
+        direction LR
+        LLM["LLM diagnosis<br/>(AgentRouter, Anthropic-compatible)"]
+        RULES["Deterministic rule fallback"]
+    end
+
+    subgraph DP["Decision Plane · Go 1.23 :8080"]
+        direction LR
+        SM["P(success) ML model"]
+        ERV["ERV optimizer & ranking"]
+        POL["Deterministic policy guardrails"]
+        KILL["Kill switch"]
+    end
+
+    subgraph EP["Execution Plane · Go 1.23 worker"]
+        direction LR
+        EXEC["Idempotent executor"]
+        RZP["Razorpay sandbox dispatcher<br/>(mock when no keys)"]
+        REC["Reconciliation loop"]
+    end
+
+    subgraph DATA["State"]
+        direction LR
+        PG[("PostgreSQL 16<br/>source of truth")]
+        RD[("Redis 7<br/>ephemeral coordination")]
+    end
+
+    IP -->|"validated advisory JSON"| DP
+    DP -->|"approved action token"| EP
+    EP --> PG
+    EP -. optional accel .-> RD
+    DP -. cooldown / rate .-> RD
+```
+
+**Failure tolerance**
+
+- **Intelligence plane down** — the Decision plane uses deterministic rule-based diagnosis; zero
+  downtime.
+- **Redis down** — cooldown/rate checks fall back to Postgres timestamps; financial correctness is
+  never affected.
+- **No Razorpay keys** — a deterministic mock executor runs; no money moves, the pipeline is fully
+  exercisable.
+- **Single source of truth** — Postgres holds immutable state transitions, the ledger, and
+  idempotency locks.
+
+Deeper detail: [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) and
+[`docs/ARCHITECTURE_DIAGRAM.md`](./docs/ARCHITECTURE_DIAGRAM.md).
+
+---
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| Decision & execution engine | Go 1.23 (`net/http`, standard library routing) |
+| Intelligence / diagnosis | Python 3.12, FastAPI, Pydantic |
+| LLM inference | AgentRouter gateway (Anthropic-compatible), default `claude-sonnet-5` — **optional** |
+| P(success) model | L2 logistic regression (NumPy), heuristic fallback |
+| Data | PostgreSQL 16 (durable) · Redis 7 (ephemeral, optional) |
+| Merchant dashboard & landing page | Next.js 14, React 18, TypeScript, Tailwind CSS |
+| Payments | Razorpay API (sandbox); deterministic mock when unconfigured |
+| Ops | Docker Compose, Prometheus, Grafana |
+
+---
+
+## Repository structure
 
 ```text
 .
-├── assets/                     # Hero banners and brand visual assets
-├── dashboard/                  # Next.js 14 Merchant Cockpit & Analytics
-├── decision-engine/            # Go 1.23 Decision & Execution Planes
-│   ├── cmd/server/             # HTTP API entrypoint (:8080)
-│   ├── internal/decision/      # ERV computation & candidate ranking
-│   ├── internal/executor/      # Idempotent action execution against Razorpay
-│   ├── internal/policy/        # Deterministic rules, limits, and kill-switches
-│   └── internal/storage/       # PostgreSQL queries & atomic transactions
-├── diagnosis-service/          # Python 3.12 / FastAPI Intelligence Plane
-│   ├── main.py                 # FastAPI application (:8000)
-│   ├── llm/                    # Gemini / LLM prompts and structured outputs
-│   └── models/                 # Pydantic schemas and validation
-├── docs/                       # Architectural specs and workflow diagrams
-│   ├── ARCHITECTURE.md         # Detailed technical specification
-│   └── ARCHITECTURE_DIAGRAM.md # Presentation-ready system diagrams
-├── frontend/
-│   └── landing-page/           # Next.js 14 SentinelX-cloned landing page (:3001)
-├── migrations/                 # PostgreSQL DDL migrations (001_init, 002_kill_switch)
-├── ml/                         # Python ML models & training pipelines
-│   └── artifacts/              # Pre-trained P(success) model weights
-├── PS and Solution/            # Authoritative Buildathon problem statement & plan
-├── schemas/                    # Cross-service JSON data contracts
-├── scripts/                    # Database seeding and demo simulation runners
-├── sim/                        # Simulation test bench & baseline benchmarking
-├── docker-compose.yml          # Unified multi-service deployment stack
-└── Makefile                    # Development, build, and test automation
+├── assets/                 Brand and banner assets
+├── decision-engine/        Go 1.23 — Decision + Execution planes (:8080)
+│   ├── cmd/server/         HTTP entrypoint
+│   └── internal/           ingest · diagnosis · successmodel · erv · policy
+│                           · executor · reconcile · api · store · cache · metrics
+├── diagnosis-service/      Python 3.12 / FastAPI — Intelligence plane (:8000)
+│   ├── main.py             /internal/diagnose classifier
+│   └── llm_client.py       AgentRouter (Anthropic-compatible) client
+├── ml/                     P(success) model training + artifacts
+├── dashboard/              Next.js 14 merchant cockpit (:3000)
+├── frontend/landing-page/  Next.js 14 marketing/landing page (:3001)
+├── migrations/             PostgreSQL DDL (001–004)
+├── schemas/                Cross-service JSON data contracts
+├── scripts/                Seed + demo/chaos drivers, health check
+├── sim/                    Held-out simulation harness + results
+├── grafana/ · prometheus/  Telemetry provisioning
+├── docs/                   API_CONTRACTS · RUNNING · ARCHITECTURE · hardening notes
+├── PS and Solution/        Buildathon problem statement + plan
+├── docker-compose.yml      Full multi-service stack
+└── Makefile                Build, run, and test automation
 ```
 
 ---
 
-## 🚀 Quickstart Guide
+## Documentation
 
-> **Backend run & API reference:** see **[Backend Running.md](./Backend%20Running.md)** for the
-> full local run/verify guide (env vars, migrations, health/readiness, reset, troubleshooting) and
-> **[Backend Contracts API.md](./Backend%20Contracts%20API.md)** for every implemented HTTP route
-> (request/response schemas, auth, idempotency, examples). Production-hardening plan:
-> **[docs/production_hardening_notes.md](./docs/production_hardening_notes.md)**.
+| Document | What it covers |
+|---|---|
+| [`docs/API_CONTRACTS.md`](./docs/API_CONTRACTS.md) | Every implemented HTTP route — request/response schemas, auth, idempotency, examples. Start here for frontend integration. |
+| [`docs/RUNNING.md`](./docs/RUNNING.md) | Full local run/verify guide — env vars, migrations, health/readiness, reset, troubleshooting. |
+| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | Technical specification of the three planes. |
+| [`docs/production_hardening_notes.md`](./docs/production_hardening_notes.md) | Production-readiness gaps and plan. |
 
-### Backend at a glance
-- **Go decision-engine** (`:8080`): ingestion → diagnosis → P(success) → ERV → **deterministic
-  policy** → idempotent execution → Postgres. Phase 6 adds `pending_confirmation` + a
-  reconciliation loop and optional Razorpay sandbox execution; Phase 7 adds the merchant-scoped
-  public API (decisions, metrics, audit, override, kill switch, policy-config).
-- **Redis** is an optional accelerator (cooldown/rate counters + job queue) — never authoritative;
-  if it is down the engine falls back to Postgres-derived checks.
-- **Health:** `GET /health`, **Readiness:** `GET /ready`, **Metrics:** `GET /metrics` (Prometheus),
-  Grafana at `:3001`, Prometheus at `:9090`.
-- **Demo:** `./scripts/seed_demo_data.sh` (seed + drive events), `./scripts/chaos_demo.sh`
-  (fraud hard-stop, kill switch, AI-down, Redis-down). **Simulation:** `python3 sim/run_simulation.py`.
+---
+
+## Getting started
 
 ### Prerequisites
-* **Docker & Docker Compose** (v24+)
-* **Go** (1.23+)
-* **Python** (3.12+)
-* **Node.js** (20+) & **npm**
 
-### Option 1: One-Command Docker Deployment (Recommended)
+- Docker & Docker Compose (v24+) — the one-command path
+- For bare-metal runs: Go 1.23+, PostgreSQL 16 + `psql`, Python 3.12+, Node.js 20+ & npm
+- Redis 7 is **optional** (accelerator only)
+- **No LLM key is required.** See [Do I need API keys?](#do-i-need-api-keys) below.
+
+### Option 1 — Full stack with Docker Compose (recommended)
 
 ```bash
-# 1. Clone repository and set environment variables
+# 1. Create your env file (defaults work out of the box; no secrets required)
 cp .env.example .env
 
-# 2. Spin up the entire multi-service stack
+# 2. Build and start every service
 docker compose up -d --build
 
-# 3. Verify health across all microservices
+# 3. Verify health across services
 make health
 ```
 
-#### Service URLs:
-* **Merchant Dashboard:** [http://localhost:3000](http://localhost:3000)
-* **Go Decision Engine:** [http://localhost:8080](http://localhost:8080)
-* **FastAPI Diagnosis Service:** [http://localhost:8000](http://localhost:8000)
-* **PostgreSQL:** `localhost:5432` (`user: revrec`, `db: revrecovery`)
-* **Redis:** `localhost:6379`
+Migrations `001`–`004` and `scripts/seed_dev.sql` are auto-applied on a **fresh** Postgres volume.
+To re-apply after editing them: `docker compose down -v && docker compose up -d --build`.
 
----
+**Service URLs**
 
-### Option 2: Running the Revly Landing Page Locally
+| Service | URL |
+|---|---|
+| Merchant dashboard | http://localhost:3000 |
+| Decision engine (API) | http://localhost:8080 |
+| Diagnosis service (internal) | http://localhost:8000 |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3001 |
+| PostgreSQL | `localhost:5432` (user `revrec`, db `revrecovery`) |
+| Redis | `localhost:6379` |
 
-```bash
-cd frontend/landing-page
-npm install
-npm run dev
-```
-* **Landing Page:** [http://localhost:3001](http://localhost:3001)
-
----
-
-### Option 3: Local Development (Without Docker)
+### Option 2 — Local development without Docker
 
 ```bash
-# Start PostgreSQL & Redis in Docker
+# Start only the datastores in Docker
 docker compose up -d postgres redis
 
 # Apply migrations and seed data
 make db-migrate
 make db-seed
 
-# Terminal 1: Run Go Decision Engine
+# Terminal 1 — Go decision engine (:8080)
 make go-run
 
-# Terminal 2: Run Python Diagnosis Service
+# Terminal 2 — Python diagnosis service (:8000)
 make py-setup
 make py-run
 
-# Terminal 3: Run Merchant Dashboard
+# Terminal 3 — Merchant dashboard (:3000)
 make web-setup
 make web-dev
 ```
 
----
-
-## 🧪 Testing & Verification
+### Option 3 — Landing page only
 
 ```bash
-# Run Go unit tests and vet
-make go-test
-make go-vet
+cd frontend/landing-page
+npm install
+npm run dev        # http://localhost:3001
+```
 
-# Run Go database integration tests (idempotency, rollback, concurrency)
-make test-integration
+> Note: the landing-page dev server and Grafana both default to port `3001`. Run one at a time, or
+> start the landing page on another port (`npm run dev -- -p 3002`).
 
-# Drive a real event through the pipeline, then read the decision back
+Full env-var reference and troubleshooting: [`docs/RUNNING.md`](./docs/RUNNING.md).
+
+---
+
+## Do I need API keys?
+
+**No key is required to run Revly end-to-end.** Every external dependency has a safe fallback.
+
+| Credential | If unset (default) | Set it when you want… |
+|---|---|---|
+| `ANTHROPIC_AUTH_TOKEN` (AgentRouter, Anthropic-compatible) | Diagnosis returns `503`; the Go engine uses its **deterministic rule-based diagnosis**. Pipeline runs normally. | LLM-generated root-cause diagnosis in the demo. Set the token and `ANTHROPIC_BASE_URL`. |
+| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | A **deterministic mock executor** runs — no money moves. | Real Razorpay **sandbox** execution. |
+| `API_KEY` / `ADMIN_API_KEY` | Auth is disabled (dev convenience; logged at startup). | Merchant/admin auth enforced. |
+| `WEBHOOK_SECRET` | Inbound webhook signature verification disabled (dev). | HMAC-verified webhooks. |
+
+You do **not** need Gemini or OpenRouter — Revly does not use them. LLM inference (if you enable it)
+goes through **AgentRouter**, an Anthropic-compatible gateway, defaulting to `claude-sonnet-5`. The
+diagnosis service is the only component that ever receives an LLM key, and it holds no payment
+credentials.
+
+---
+
+## Verifying it works
+
+Drive one event through the pipeline and read the decision back:
+
+```bash
 BASE=http://localhost:8080; M=merch_aggressive
 curl -s -X POST $BASE/v1/merchants/$M/events/payment-failed -H 'Content-Type: application/json' \
   -d '{"schema_version":"0.1.0","external_event_id":"evt_readme_1","merchant_id":"'$M'","payment_id":"pay_readme_1","customer_id":"c1","event_type":"payment.failed","amount":250000,"currency":"INR","method":"card","failure_reason":"Issuer declined","prior_attempts":0,"occurred_at":"2026-09-05T10:00:00Z"}'
+
 curl -s $BASE/v1/merchants/$M/payments/pay_readme_1/decisions | jq
+curl -s $BASE/v1/merchants/$M/metrics/recovery-summary | jq
 ```
 
-See **[Backend Running.md](./Backend%20Running.md)** for the complete verification checklist.
+Demo and chaos drivers:
+
+```bash
+./scripts/seed_demo_data.sh    # seed + drive a batch of events
+./scripts/chaos_demo.sh        # fraud hard-stop, kill switch, AI-down, Redis-down
+python3 sim/run_simulation.py  # held-out simulation harness
+```
+
+Test suites:
+
+```bash
+make go-test            # Go unit tests + vet
+make test-integration   # Go DB integration tests (idempotency, rollback, concurrency)
+```
 
 ---
 
-## 📊 Simulated Evaluation Benchmarks
+## Evaluation
 
-In an end-to-end evaluation against 1,000 synthetic payment failure events across 4 recovery paradigms:
+Held-out simulation over **4,000 failed payments** generated with a different RNG seed than the
+training set (never used in training or model selection). Four recovery strategies compared:
 
-| Metric | Naive Exponential Retry | Rule-Based Dunning | **Revly Decision Engine** |
-|---|:---:|:---:|:---:|
-| **Recovery Rate** | 22.4% | 38.1% | **64.8%** |
-| **Duplicate Charge Incidents** | 14 | 3 | **0 (Zero)** |
-| **Customer Friction Score** | High (Spam) | Moderate | **Optimal (Bounded)** |
-| **Net Merchant Yield (ERV)** | ₹1,42,000 | ₹2,88,500 | **₹5,18,400** |
+| Strategy | Recovery rate | Net recovered (₹) | Unnecessary interventions |
+|---|:---:|---:|:---:|
+| `no_action` (floor) | 0.0% | 0 | 0 |
+| `always_retry` (blind) | 16.4% | 24,16,000 | 3,344 |
+| `rule_based` | 38.1% | 57,52,667 | 2,476 |
+| **`erv_based` (Revly)** | 34.6% | **52,69,451** | **2,274** |
 
-> *Note: These benchmarks reflect simulated evaluation scenarios across common Indian payment failure distributions (HDFC/SBI Netbanking 504 blips, UPI collect drop-offs, and mandate desynchronization).*
+The ERV strategy avoids economically pointless interventions — it spends the **least** on
+intervention cost while recovering competitively and respecting every safety constraint (fraud →
+escalate, confidence floor, retry limits). The P(success) model is a calibrated logistic regression
+(holdout AUC ≈ 0.68, Brier ≈ 0.21).
+
+> **These are simulated results on synthetic data with documented assumptions
+> (`ml/README_data_assumptions.md`). They do not represent real Razorpay customer behavior.**
+> Reproduce with `python3 sim/run_simulation.py`; raw output in [`sim/results/`](./sim/results/).
 
 ---
 
-## 👥 Razorpay AI Buildathon Credits
+## Observability
 
-* **Track:** Track 03 — Autonomous Revenue Recovery
-* **Event:** Razorpay AI Buildathon 2026
-* **Engineering Stack:** Go 1.23 · FastAPI · Next.js 14 · PostgreSQL · Redis · Gemini 2.5 · Razorpay API
+- **Health:** `GET /health` → `{status, db, redis}`
+- **Readiness:** `GET /ready` → `200` only when the DB is reachable (Redis optional)
+- **Metrics:** `GET /metrics` (Prometheus exposition), scraped into Grafana at `:3001`
 
 ---
+
+## Credits
+
+- **Track:** Track 03 — Autonomous Revenue Recovery
+- **Event:** Razorpay AI Buildathon 2026
+- **Stack:** Go 1.23 · FastAPI · Next.js 14 · PostgreSQL 16 · Redis 7 · AgentRouter (Anthropic-compatible) · Razorpay API
 
 <div align="center">
-  <sub>Built with precision for the Razorpay AI Buildathon. All financial actions are bounded, verified, and idempotent.</sub>
+  <sub>All financial actions are bounded, idempotent, and recorded. Built for the Razorpay AI Buildathon.</sub>
 </div>

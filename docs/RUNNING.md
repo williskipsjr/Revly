@@ -1,7 +1,7 @@
 # Backend Running
 
 How to run the Go `decision-engine` backend (and its Postgres/Redis/diagnosis dependencies)
-locally. See **Backend Contracts API.md** for the endpoint reference.
+locally. See **[API_CONTRACTS.md](./API_CONTRACTS.md)** for the endpoint reference.
 
 ## Prerequisites
 - Docker + Docker Compose (the one-command path), **or** for bare-metal: Go 1.23+, PostgreSQL 16,

@@ -1,7 +1,18 @@
 # Backend Contracts — API
 
-The **actual** HTTP surface implemented by the Go `decision-engine` (as of Phase 7). All money is
-integer **paise**. All bodies are JSON. Base URL default: `http://localhost:8080`.
+The **actual** HTTP surface implemented by the backend (as of Phase 7). All money is integer
+**paise**. All bodies are JSON.
+
+Two services expose HTTP:
+
+| Service | Base URL (default) | Role |
+|---|---|---|
+| **Go `decision-engine`** | `http://localhost:8080` | Ingestion, decisions, metrics, policy, execution — the public API + service-internal routes below. |
+| **Python `diagnosis-service`** | `http://localhost:8000` | LLM diagnosis classifier (Intelligence plane), service-to-service only. See the last section. |
+
+> **Frontend integrators:** you only ever call the `decision-engine` at `:8080`. The
+> `diagnosis-service` is internal and is invoked by the Go engine, never by a browser. Set
+> `NEXT_PUBLIC_API_BASE_URL=http://localhost:8080` and use the **merchant-gated** routes below.
 
 ## Auth model
 - **Merchant-gated** routes require the merchant API key. **Admin-gated** routes (kill switch,
@@ -155,3 +166,36 @@ All errors: `{"error":"<code>"}`, some add `"detail"`. Common: `400 invalid_json
 | GET | `/ready` | readiness (200 only if DB reachable; Redis optional) | none | `200`/`503` |
 | GET | `/version` | service/version | none | `200` |
 | GET | `/metrics` | Prometheus text exposition (Phase 10) | none | `200` |
+
+---
+
+## Diagnosis service (Python, `:8000`) — internal only
+
+Isolated Intelligence-plane classifier. Holds **no payment credentials** — only the LLM gateway
+key. It never computes P(success), never selects the executed action, never calls the payment API.
+Every failure returns a structured non-2xx so the Go engine falls back to its deterministic rule
+table (the single source of truth for that table).
+
+### POST `/internal/diagnose`
+- **Purpose:** classify a failed-payment event into a schema-valid `Diagnosis` (root cause,
+  confidence, rationale, candidate actions) via JSON-schema-constrained (tool-forced) LLM output.
+- **Auth:** none (network-internal, service-to-service; never exposed publicly).
+- **Request** (`DiagnoseRequest`): `{payment_event_id, event_type, failure_reason?, method?, prior_attempts}` — moneyless by design.
+- **Response** (`200`, `Diagnosis`):
+```json
+{"schema_version":"0.1.0","root_cause":"temporary_bank_decline","confidence":0.6,
+ "rationale":"...","candidate_actions":["delayed_retry","alt_method"],
+ "model_version":"claude-sonnet-5","source":"llm","payment_event_id":"...","created_at":"..."}
+```
+- **Fallback signals:** `503 {"error":"llm_unavailable"}` (no credential set),
+  `502 {"error":"llm_failed"|"invalid_diagnosis"|"internal_error"}` (transport/timeout or the model
+  returned output that violated the contract). Any of these → Go engine uses rule-based diagnosis.
+
+### GET `/health` · GET `/version`
+- **`/health`** → `200 {"status":"ok","service":"diagnosis-service","version":"0.1.0"}`.
+- **`/version`** → `200 {"service","version","llm_model","llm_configured":true|false}` —
+  `llm_configured` reports whether a gateway credential is present.
+
+> **LLM is optional.** With no `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` set, `/internal/diagnose`
+> returns `503` and the whole pipeline still runs on the deterministic rule table. The gateway is
+> **AgentRouter** (Anthropic-compatible), default model `claude-sonnet-5` — **not** Gemini/OpenRouter.
