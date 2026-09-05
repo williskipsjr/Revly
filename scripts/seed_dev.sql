@@ -15,16 +15,30 @@
 
 BEGIN;
 
+-- Phase 5 platform policy (singleton). Migration 003 already creates this row with the schema
+-- defaults; this INSERT documents the dev baseline explicitly and is a no-op when the row exists.
+-- The global kill switch is OFF by default; flip it to true to demo a platform-wide halt.
+INSERT INTO platform_policy
+    (id, global_kill_switch, confidence_floor, max_retries_ceiling, min_cooldown_minutes, max_amount_ceiling, max_daily_action_cap)
+VALUES
+    ('platform', false, 0.400, 5, 5, 100000000, 50)  -- amount ceiling cap ₹1,000,000
+ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO merchants (id, name, risk_tolerance_tier) VALUES
     ('merch_conservative', 'Aurora Premium Goods', 'conservative'),
     ('merch_aggressive',   'Volt Direct Retail',   'aggressive')
 ON CONFLICT (id) DO NOTHING;
 
+-- The conservative merchant RAISES its confidence floor to 0.600 (above the 0.400 platform
+-- floor); the aggressive merchant keeps the platform floor (NULL override). This makes the
+-- Phase 5 DoD directly demonstrable: a borderline-confidence diagnosis (0.4–0.6) is allowed an
+-- autonomous action for the aggressive merchant but gated to notify/no_action for the
+-- conservative one — the SAME event, different behavior purely from merchant policy.
 INSERT INTO merchant_policy_config
     (merchant_id, max_retries, cooldown_minutes, min_erv_threshold, daily_action_cap, amount_ceiling, confidence_floor_override)
 VALUES
-    ('merch_conservative', 2, 60, 5000.0000,  3,  5000000,  NULL),   -- ERV bar ₹50, ceiling ₹50,000
-    ('merch_aggressive',   4, 15,  500.0000, 20, 50000000,  NULL)    -- ERV bar ₹5,  ceiling ₹500,000
+    ('merch_conservative', 2, 60, 5000.0000,  3,  5000000,  0.600),  -- ERV bar ₹50, ceiling ₹50,000, floor 0.60
+    ('merch_aggressive',   4, 15,  500.0000, 20, 50000000,  NULL)    -- ERV bar ₹5,  ceiling ₹500,000, platform floor
 ON CONFLICT (merchant_id) DO NOTHING;
 
 -- Per-action cost (paise) and friction weight (multiplier). Monetary costs are shared

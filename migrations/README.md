@@ -16,6 +16,17 @@ default keeps every existing config row and the seed working unchanged. Phase 2 
 populating the previously schema-only tables (`diagnoses`, `success_model_scores`,
 `erv_scores`, `decisions`, `actions`, `outcomes`, `audit_log`) via the recovery pipeline.
 
+**`003_phase5_policy.sql`** (Phase 5) adds the **platform** policy layer for the full policy
+engine (PLAN.md §6): a singleton `platform_policy` table holding the platform-wide
+`global_kill_switch`, the `confidence_floor` (a safety floor a merchant may only raise), and the
+ceilings that bound merchant overrides (`max_retries_ceiling`, `min_cooldown_minutes`,
+`max_amount_ceiling`, `max_daily_action_cap`). The row is pinned to a single `'platform'` id by a
+CHECK and seeded with the schema defaults. Safe to re-run (`CREATE TABLE IF NOT EXISTS` + an
+idempotent singleton INSERT). No new per-merchant columns are needed — the merchant knobs already
+exist on `merchant_policy_config` from 001/002; Phase 5 only adds the platform layer and resolves
+merchant config against it in Go (`internal/policy/merchant_override.go`). No Redis is introduced
+(cooldown/daily-cap facts stay Postgres-derived; Redis is a Phase 6 accelerator).
+
 ## Runner
 
 Plain **`psql -f`** — no migrate tool or ORM (kept minimal by design; the schema is small
@@ -25,10 +36,11 @@ and indexes use `IF NOT EXISTS`.
 
 Two ways to apply it:
 
-- **Compose (fresh volume, automatic):** `docker-compose.yml` mounts `001_init.sql` and
-  `scripts/seed_dev.sql` into the Postgres container's `/docker-entrypoint-initdb.d/`.
-  Postgres runs them, in alphabetical order, **only when the data directory is empty** — i.e.
-  on first boot of a new `pgdata` volume. To re-apply after editing, recreate the volume:
+- **Compose (fresh volume, automatic):** `docker-compose.yml` mounts every migration
+  (`001`–`003`) and `scripts/seed_dev.sql` (as `004_seed_dev.sql`, so it runs last) into the
+  Postgres container's `/docker-entrypoint-initdb.d/`. Postgres runs them, in alphabetical order,
+  **only when the data directory is empty** — i.e. on first boot of a new `pgdata` volume. To
+  re-apply after editing, recreate the volume:
 
   ```
   docker compose down -v && docker compose up
@@ -37,7 +49,7 @@ Two ways to apply it:
 - **Against a running DB (manual):** from the repo root,
 
   ```
-  make db-migrate   # psql -f 001_init.sql, then 002_phase2_kill_switch.sql
+  make db-migrate   # psql -f 001_init.sql, 002_phase2_kill_switch.sql, 003_phase5_policy.sql
   make db-seed      # psql -f scripts/seed_dev.sql
   ```
 

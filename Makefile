@@ -64,6 +64,7 @@ go-run:
 db-migrate:
 	psql "$(PSQL_URL)" -v ON_ERROR_STOP=1 -f migrations/001_init.sql
 	psql "$(PSQL_URL)" -v ON_ERROR_STOP=1 -f migrations/002_phase2_kill_switch.sql
+	psql "$(PSQL_URL)" -v ON_ERROR_STOP=1 -f migrations/003_phase5_policy.sql
 
 db-seed:
 	psql "$(PSQL_URL)" -v ON_ERROR_STOP=1 -f scripts/seed_dev.sql
