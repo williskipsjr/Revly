@@ -1,0 +1,447 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'Geist Mono', monospace;
+    --chart-grid: rgba(255, 255, 255, 0.05);
+  }
+
+  html.light {
+    --chart-grid: rgba(6, 182, 212, 0.14);
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #0c0d14;
+    color: #fafafa;
+    transition: background-color 0.25s ease, color 0.25s ease;
+    letter-spacing: -0.01em;
+  }
+
+  /* LIGHT THEME CANVAS - Refreshing Light Bluish-Teal Palette (Reference Image 2) */
+  html.light body {
+    background-color: #edf7fa;
+    background-image: radial-gradient(at 10% 10%, rgba(6, 182, 212, 0.08) 0px, transparent 50%),
+                      radial-gradient(at 90% 90%, rgba(14, 165, 233, 0.06) 0px, transparent 50%);
+    color: #0f172a;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0c0d14;
+}
+::-webkit-scrollbar-thumb {
+  background: #202434;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2e354a;
+}
+
+/* =========================================================================
+   DARK THEME: SMOOTH CURVES, SOFT BORDERS, ELEGANT GLOW (Reference Image 1)
+   No harsh 90° straight line cuts. Organic rounded-2xl cards with soft depth.
+   ========================================================================= */
+
+html.dark .bg-\[\#151722\],
+html.dark .bg-\[\#0e121a\] {
+  background-color: #12141c;
+  border-color: rgba(255, 255, 255, 0.07) !important;
+  border-radius: 1.25rem !important;
+  box-shadow: 0 8px 30px -6px rgba(0, 0, 0, 0.55), 0 2px 8px -2px rgba(0, 0, 0, 0.4);
+}
+
+html.dark .bg-\[\#10121a\] {
+  background-color: #0d0f16;
+  border-color: rgba(255, 255, 255, 0.06) !important;
+  border-radius: 1rem !important;
+}
+
+html.dark .border-\[\#222533\],
+html.dark .border-\[\#1f222e\] {
+  border-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+html.dark .border-\[\#2d3249\],
+html.dark .border-\[\#313a57\],
+html.dark .border-\[\#2b2f42\] {
+  border-color: rgba(255, 255, 255, 0.09) !important;
+}
+
+/* Active navigation item in dark theme (warm orange indicator from Image 1) */
+html.dark .active-nav-indicator {
+  background-color: #f97316;
+  box-shadow: 0 0 12px rgba(249, 115, 22, 0.6);
+}
+
+html.dark .active-nav-item {
+  background-color: #1a1d27;
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+html.dark .active-nav-icon {
+  color: #fb923c;
+}
+
+/* =========================================================================
+   LIGHT THEME: CRISP LIGHT BLUISH PALETTE (Reference Image 2 - Company 3_1)
+   Light bluish canvas, dark ocean navy-teal sidebar, crisp white cards,
+   vibrant cyan/teal accents and smooth rounded corners.
+   ========================================================================= */
+
+html.light ::-webkit-scrollbar-track {
+  background: #edf7fa;
+}
+html.light ::-webkit-scrollbar-thumb {
+  background: #a5d8e2;
+  border-radius: 9999px;
+}
+html.light ::-webkit-scrollbar-thumb:hover {
+  background: #0891b2;
+}
+
+/* Canvas & Workspaces - Light Bluish-Teal Canvas */
+html.light .bg-\[\#0c0d14\],
+html.light .bg-\[\#090b0e\] {
+  background-color: #edf7fa !important;
+}
+
+/* Top header in Light Theme - Translucent White with Soft Cyan Border */
+html.light header {
+  background-color: rgba(255, 255, 255, 0.85) !important;
+  border-bottom-color: #d6ecf1 !important;
+  backdrop-filter: blur(12px);
+}
+
+/* Sidebar in Light Theme - Deep Oceanic Navy-Teal (Exact from Image 2!) */
+html.light aside {
+  background-color: #132530 !important;
+  border-right-color: #1e3644 !important;
+  color: #e2e8f0 !important;
+}
+
+html.light aside .text-\[\#fafafa\],
+html.light aside .text-zinc-200 {
+  color: #ffffff !important;
+}
+
+html.light aside .text-zinc-400 {
+  color: #8da2b0 !important;
+}
+
+html.light aside .text-zinc-500 {
+  color: #647b8a !important;
+}
+
+html.light aside .bg-\[\#0f1017\] {
+  background-color: #132530 !important;
+  border-color: #1e3644 !important;
+}
+
+html.light aside .bg-\[\#141620\] {
+  background-color: #1a2f3c !important;
+  border-color: #243f50 !important;
+  color: #e2e8f0 !important;
+}
+
+html.light aside input {
+  background-color: #1a2f3c !important;
+  border-color: #243f50 !important;
+  color: #ffffff !important;
+}
+
+html.light aside input::placeholder {
+  color: #728a99 !important;
+}
+
+/* Active navigation item in light theme sidebar - Vibrant Cyan (Image 2) */
+html.light .active-nav-indicator {
+  background-color: #06b6d4;
+  box-shadow: 0 0 10px rgba(6, 182, 212, 0.6);
+}
+
+html.light .active-nav-item,
+html.light aside .bg-\[\#1e2232\] {
+  background-color: #00a8b5 !important;
+  color: #ffffff !important;
+  border-color: #008f9b !important;
+  box-shadow: 0 2px 10px rgba(0, 168, 181, 0.35) !important;
+}
+
+html.light aside .bg-\[\#1e2232\] svg,
+html.light aside .bg-\[\#1e2232\] span,
+html.light .active-nav-icon {
+  color: #ffffff !important;
+}
+
+html.light aside .hover\:bg-\[\#151722\]:hover {
+  background-color: #1b3240 !important;
+  color: #ffffff !important;
+}
+
+/* CARDS & CONTAINERS IN LIGHT MODE: Crisp White with Generous Curves & Soft Bluish Shadow */
+html.light .bg-\[\#151722\],
+html.light .bg-\[\#0e121a\] {
+  background-color: #ffffff !important;
+  border-color: #d5eaef !important;
+  border-radius: 1.25rem !important;
+  box-shadow: 0 4px 20px -2px rgba(6, 182, 212, 0.08), 0 2px 6px -1px rgba(15, 23, 42, 0.04) !important;
+}
+
+/* Inner sub-cards and rows */
+html.light .bg-\[\#10121a\] {
+  background-color: #f5fbfc !important;
+  border-color: #d8ebf0 !important;
+  border-radius: 1rem !important;
+}
+
+html.light .bg-\[\#181c2b\],
+html.light .bg-\[\#1c1e2b\],
+html.light .bg-\[\#202332\] {
+  background-color: #e6f4f7 !important;
+  border-color: #cae6ed !important;
+  color: #0e7490 !important;
+}
+
+html.light .bg-\[\#1e2130\] {
+  background-color: #e0f4f7 !important;
+  color: #0e7490 !important;
+  border-color: #bee3eb !important;
+}
+
+html.light .bg-\[\#1a1e2d\] {
+  background-color: #ecfdf5 !important;
+  border-color: #a7f3d0 !important;
+}
+
+/* Secondary Panels & Controls */
+html.light .bg-\[\#141620\]:not(aside *) {
+  background-color: #ffffff !important;
+  border-color: #d5eaef !important;
+}
+
+/* Hover States on Cards */
+html.light .hover\:bg-\[\#1a1d2b\]:not(aside *):hover,
+html.light .hover\:bg-\[\#1a1c27\]:not(aside *):hover,
+html.light .hover\:bg-\[\#151722\]:not(aside *):hover,
+html.light .hover\:bg-\[\#141620\]:not(aside *):hover {
+  background-color: #f0f9fb !important;
+}
+
+/* Borders & Soft Dividers */
+html.light .border-\[\#222533\]:not(aside *),
+html.light .border-\[\#1f222e\]:not(aside *) {
+  border-color: #d5eaef !important;
+}
+
+html.light .border-\[\#2d3249\]:not(aside *),
+html.light .border-\[\#313a57\]:not(aside *),
+html.light .border-\[\#2b2f42\]:not(aside *) {
+  border-color: #cae5ec !important;
+}
+
+html.light .divide-\[\#222533\] > :not([hidden]) ~ :not([hidden]),
+html.light .divide-\[\#1f222e\] > :not([hidden]) ~ :not([hidden]) {
+  border-color: #e2f0f3 !important;
+}
+
+/* Smooth Card Hover Outline */
+html.light .hover\:border-zinc-700:hover,
+html.light .hover\:border-\[\#2f3346\]:hover,
+html.light .hover\:border-zinc-600:hover {
+  border-color: #0891b2 !important;
+  box-shadow: 0 6px 24px -2px rgba(6, 182, 212, 0.16) !important;
+}
+
+/* Typography in Light Bluish Theme */
+html.light .text-\[\#fafafa\],
+html.light .text-zinc-100 {
+  color: #0f172a !important;
+}
+
+html.light .text-zinc-200 {
+  color: #1e293b !important;
+}
+
+html.light .text-zinc-300 {
+  color: #334155 !important;
+}
+
+html.light .text-zinc-400:not(aside *) {
+  color: #64748b !important;
+}
+
+html.light .text-zinc-500:not(aside *) {
+  color: #94a3b8 !important;
+}
+
+html.light .text-zinc-600:not(aside *) {
+  color: #cbd5e1 !important;
+}
+
+html.light input:not(aside *)::placeholder,
+html.light textarea:not(aside *)::placeholder {
+  color: #94a3b8 !important;
+}
+
+/* Form Controls in Light Mode */
+html.light input:not(aside *),
+html.light select:not(aside *),
+html.light textarea:not(aside *) {
+  background-color: #ffffff !important;
+  border-color: #d1eaef !important;
+  color: #0f172a !important;
+}
+
+html.light input:not(aside *):focus,
+html.light select:not(aside *):focus,
+html.light textarea:not(aside *):focus {
+  border-color: #00a8b5 !important;
+  box-shadow: 0 0 0 3px rgba(0, 168, 181, 0.15) !important;
+}
+
+/* Primary Action Buttons in Light Mode: Vibrant Teal/Cyan with White Text (Image 2) */
+html.light .bg-zinc-100.text-zinc-950 {
+  background-color: #00a8b5 !important;
+  color: #ffffff !important;
+  border-color: #00a8b5 !important;
+  box-shadow: 0 2px 10px rgba(0, 168, 181, 0.3) !important;
+}
+
+html.light .bg-zinc-100.text-zinc-950:hover {
+  background-color: #0891b2 !important;
+  box-shadow: 0 4px 14px rgba(0, 168, 181, 0.4) !important;
+}
+
+/* Status & Accents */
+html.light .text-emerald-400 {
+  color: #059669 !important;
+}
+
+html.light .text-amber-400,
+html.light .text-amber-300 {
+  color: #d97706 !important;
+}
+
+html.light .text-rose-400,
+html.light .text-rose-300 {
+  color: #e11d48 !important;
+}
+
+html.light .text-blue-400 {
+  color: #0284c7 !important;
+}
+
+html.light .text-cyan-400 {
+  color: #0891b2 !important;
+}
+
+html.light .text-indigo-400 {
+  color: #00a8b5 !important;
+}
+
+/* Badges & Alert Backdrops */
+html.light .bg-emerald-500\/10 {
+  background-color: rgba(5, 150, 105, 0.1) !important;
+}
+html.light .border-emerald-500\/30 {
+  border-color: rgba(5, 150, 105, 0.3) !important;
+}
+
+html.light .bg-amber-500\/10,
+html.light .bg-amber-950\/20 {
+  background-color: #fffbeb !important;
+  border-color: #fde68a !important;
+  color: #b45309 !important;
+}
+html.light .border-amber-500\/30 {
+  border-color: #f59e0b !important;
+}
+
+html.light .bg-rose-500\/10 {
+  background-color: rgba(225, 29, 72, 0.08) !important;
+}
+html.light .border-rose-500\/30 {
+  border-color: rgba(225, 29, 72, 0.25) !important;
+}
+
+html.light .bg-blue-500\/10 {
+  background-color: #e0f2fe !important;
+}
+html.light .border-blue-500\/30 {
+  border-color: #7dd3fc !important;
+}
+
+html.light .bg-rose-950\/20 {
+  background-color: #ffe4e6 !important;
+  border-color: #fecdd3 !important;
+}
+
+/* Actor Badges */
+html.light .bg-indigo-950\/40 {
+  background-color: #e0f7fa !important;
+  border-color: #b2ebf2 !important;
+}
+html.light .border-indigo-800\/40 {
+  border-color: #80deea !important;
+}
+html.light .text-indigo-300 {
+  color: #00838f !important;
+}
+
+html.light .bg-amber-950\/40 {
+  background-color: #fffbeb !important;
+  border-color: #fde68a !important;
+}
+html.light .border-amber-800\/40 {
+  border-color: #fcd34d !important;
+}
+
+html.light .bg-emerald-950\/40 {
+  background-color: #ecfdf5 !important;
+  border-color: #a7f3d0 !important;
+}
+html.light .border-emerald-800\/40 {
+  border-color: #6ee7b7 !important;
+}
+
+html.light .bg-blue-950\/40 {
+  background-color: #e0f2fe !important;
+  border-color: #bae6fd !important;
+}
+html.light .border-blue-800\/40 {
+  border-color: #7dd3fc !important;
+}
+
+/* Code and Inline Pre */
+html.light code {
+  background-color: #e6f6f9 !important;
+  color: #0e7490 !important;
+  border-color: #c5e9f0 !important;
+}
+
+/* Modal Backdrops & SVGs */
+html.light .bg-black\/80 {
+  background-color: rgba(15, 23, 42, 0.45) !important;
+}
+
+html.light line[stroke="#222533"] {
+  stroke: rgba(6, 182, 212, 0.16);
+}
+
+html.light line[stroke="#52525b"] {
+  stroke: #0891b2;
+}
+
+html.light ::selection {
+  background-color: #b9e9f2;
+  color: #083344;
+}
+

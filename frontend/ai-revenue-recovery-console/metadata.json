@@ -1,0 +1,6 @@
+{
+  "name": "AI Revenue Recovery Console",
+  "description": "High-trust merchant and operator console for the AI Revenue Recovery Decision Platform: explainable ERV ranking, deterministic policy safety, and audit tracing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
