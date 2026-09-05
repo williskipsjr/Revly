@@ -1,9 +1,14 @@
 // Command server is the entrypoint for the Go Decision + Execution planes.
 //
 // Phase 0: stdlib-only HTTP server exposing liveness/version.
-// Phase 1: connects to PostgreSQL (pgx) and mounts the idempotent payment-event
-// ingestion endpoint. If DATABASE_URL is unset the service still boots for
-// liveness/version, but ingestion is disabled.
+// Phase 1: connects to PostgreSQL (pgx) and mounts the idempotent payment-event ingestion.
+// Phase 2–5: recovery pipeline (diagnose → P(success) → ERV → full policy) persisted to Postgres.
+// Phase 6: real/mock execution with pending_confirmation + reconciliation; Redis (optional,
+//
+//	never authoritative) for cooldown/rate counters + job queue.
+//
+// Phase 7: merchant-scoped public API (decisions, metrics, audit, override, kill switch, config).
+// Phase 10: /metrics Prometheus endpoint + structured logging.
 package main
 
 import (
@@ -18,12 +23,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/api"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/cache"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/config"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/db"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/diagnosis/llm"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/execapi"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/executor"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/ingest"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/metrics"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/pipeline"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/reconcile"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/scoreapi"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/store"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/successmodel"
@@ -35,10 +45,10 @@ func main() {
 
 	cfg := config.Load()
 
-	// Connect to the durable store. The decision engine has no purpose without its source
-	// of truth, so a configured-but-unreachable database is a fatal startup error (after a
-	// short retry to absorb the container start-up race). With no DATABASE_URL we degrade to
-	// Phase 0 liveness-only mode.
+	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Durable store (single source of truth). Configured-but-unreachable is fatal.
 	var database *sql.DB
 	if cfg.DatabaseURL != "" {
 		database = mustConnect(cfg.DatabaseURL)
@@ -47,23 +57,35 @@ func main() {
 		slog.Warn("ingestion disabled: DATABASE_URL not set (liveness/version only)")
 	}
 
-	// Phase 3: load the trained P(success) logistic-regression artifact. If it is absent or
-	// unreadable, degrade to the Phase-2 heuristic estimator rather than stalling — P(success)
-	// stays a code path fully separate from diagnosis either way (PLAN.md §5/§7).
-	scorer := loadScorer(cfg.SuccessModelPath)
+	// Phase 6: optional Redis (ephemeral, never authoritative — PLAN.md §13). A missing/down
+	// Redis degrades to the Postgres-derived checks; the engine keeps working.
+	redisCache, err := cache.New(cfg.RedisURL)
+	if err != nil {
+		slog.Error("invalid REDIS_URL", "err", err)
+	}
+	defer func() { _ = redisCache.Close() }()
+	if cfg.RedisURL == "" {
+		slog.Warn("Redis disabled: REDIS_URL not set (cooldown/rate checks use Postgres-derived facts)")
+	} else if redisCache.Available() {
+		slog.Info("Redis connected (cooldown/rate accelerator + job queue)")
+	} else {
+		slog.Warn("Redis configured but unreachable at startup; falling back to Postgres-derived facts")
+	}
 
-	// Phase 4: choose the diagnoser. When DIAGNOSIS_SERVICE_URL is set, use the LLM-backed
-	// diagnoser (which falls back to the rule table on any failure); otherwise the pipeline
-	// uses the deterministic rule table directly. Either way diagnosis never stalls the plane.
+	scorer := loadScorer(cfg.SuccessModelPath)
 	diagOpts := loadDiagnoserOpts(cfg, logger)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", healthHandler(cfg, database))
-	mux.HandleFunc("GET /version", versionHandler(cfg))
+	// Phase 6: choose the executor. Real Razorpay sandbox when credentials are set; otherwise the
+	// deterministic mock (PLAN.md §15 MVP). Both satisfy StatusResolver for reconciliation.
+	dispatcher := chooseDispatcher(cfg, logger)
 
-	// Internal, service-to-service scoring/explainability endpoints (PLAN.md §9). The score
-	// endpoint needs only the scorer; erv/compute needs merchant costs, so it degrades to 503
-	// when no DB is configured (costs == nil).
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", healthHandler(cfg, database, redisCache))
+	mux.HandleFunc("GET /ready", readyHandler(database, redisCache))
+	mux.HandleFunc("GET /version", versionHandler(cfg))
+	mux.HandleFunc("GET /metrics", metrics.Handler())
+
+	// Internal scoring/explainability endpoints.
 	var costs scoreapi.CostSource
 	if database != nil {
 		costs = store.New(database)
@@ -74,27 +96,38 @@ func main() {
 
 	if database != nil {
 		st := store.New(database)
-		// Phase 2/3: the recovery pipeline runs the full decision/execution slice for each newly
-		// ingested event, sourcing P(success) from the statistical scorer. External action calls
-		// are mocked (executor.MockDispatcher); Postgres is the only durable store — no Redis
-		// dependency (PLAN.md §15).
-		runner := pipeline.NewRunner(st, executor.MockDispatcher{}, scorer, logger, diagOpts...)
+		runner := pipeline.NewRunner(st, dispatcher, scorer, logger, diagOpts...)
 		mux.HandleFunc(
 			"POST /v1/merchants/{id}/events/payment-failed",
 			ingest.NewHandler(st, runner, cfg.WebhookSecret, logger),
 		)
 		if cfg.WebhookSecret == "" {
 			slog.Warn("webhook signature verification DISABLED: WEBHOOK_SECRET not set")
-		} else {
-			slog.Info("webhook signature verification enabled")
 		}
-		slog.Info("ingestion endpoint mounted", "route", "POST /v1/merchants/{id}/events/payment-failed")
+
+		// Phase 6: reconciliation (background loop + on-demand endpoint) + execute-action.
+		var reconciler *reconcile.Reconciler
+		if resolver, ok := dispatcher.(executor.StatusResolver); ok {
+			reconciler = reconcile.NewReconciler(st, resolver, logger)
+			go reconciler.RunLoop(rootCtx, cfg.ReconcileInterval)
+			if cfg.ReconcileInterval > 0 {
+				slog.Info("reconciliation loop started", "interval", cfg.ReconcileInterval)
+			}
+		}
+		execapi.NewHandlers(dispatcher, st, reconciler, logger).Register(mux)
+
+		// Phase 7: merchant-scoped public API.
+		apiHandlers := api.NewHandlers(st, api.Auth{MerchantKey: cfg.APIKey, AdminKey: cfg.AdminAPIKey}, logger)
+		apiHandlers.Register(mux)
+		if cfg.APIKey == "" {
+			slog.Warn("public API auth DISABLED: API_KEY not set (dev only)")
+		}
+		if cfg.AdminAPIKey == "" {
+			slog.Warn("admin API auth DISABLED: ADMIN_API_KEY not set (dev only)")
+		}
+		slog.Info("public + internal APIs mounted")
 	}
-	slog.Info("internal scoring endpoints mounted",
-		"score", "POST /internal/success-model/score",
-		"erv", "POST /internal/erv/compute",
-		"success_model", scorer.Version(),
-	)
+	slog.Info("internal scoring endpoints mounted", "success_model", scorer.Version())
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -110,10 +143,7 @@ func main() {
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	<-ctx.Done()
-
+	<-rootCtx.Done()
 	slog.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -122,9 +152,17 @@ func main() {
 	}
 }
 
-// mustConnect connects to Postgres, retrying briefly to absorb the container start-up
-// race (docker-compose already gates on postgres health, but a direct `go run` may race).
-// It exits the process if the database is configured but unreachable.
+// chooseDispatcher selects the real Razorpay sandbox executor when credentials are configured,
+// else the deterministic mock (PLAN.md §15).
+func chooseDispatcher(cfg config.Config, logger *slog.Logger) executor.Dispatcher {
+	if cfg.RazorpayKeyID != "" && cfg.RazorpayKeySecret != "" {
+		slog.Info("using Razorpay sandbox executor", "base_url", cfg.RazorpayBaseURL)
+		return executor.NewRazorpayDispatcher(cfg.RazorpayBaseURL, cfg.RazorpayKeyID, cfg.RazorpayKeySecret, 8*time.Second, logger)
+	}
+	slog.Warn("using MOCK executor: RAZORPAY_KEY_ID/SECRET not set (no real money movement)")
+	return executor.MockDispatcher{}
+}
+
 func mustConnect(dsn string) *sql.DB {
 	const attempts = 10
 	var lastErr error
@@ -140,12 +178,9 @@ func mustConnect(dsn string) *sql.DB {
 	}
 	slog.Error("could not connect to database", "err", lastErr)
 	os.Exit(1)
-	return nil // unreachable
+	return nil
 }
 
-// loadScorer returns the statistical P(success) scorer loaded from path, or the Phase-2
-// heuristic fallback when path is empty or the artifact cannot be read/parsed. The choice is
-// logged so the active estimator is never a mystery.
 func loadScorer(path string) successmodel.Scorer {
 	if path == "" {
 		slog.Warn("SUCCESS_MODEL_PATH not set: using Phase-2 heuristic P(success) estimator")
@@ -153,19 +188,13 @@ func loadScorer(path string) successmodel.Scorer {
 	}
 	model, err := successmodel.LoadModel(path)
 	if err != nil {
-		slog.Warn("could not load success model; falling back to heuristic estimator",
-			"path", path, "err", err)
+		slog.Warn("could not load success model; falling back to heuristic estimator", "path", path, "err", err)
 		return successmodel.HeuristicScorer{}
 	}
 	slog.Info("loaded statistical P(success) model", "path", path, "version", model.Version())
 	return model
 }
 
-// loadDiagnoserOpts returns the pipeline options selecting the Phase-4 LLM diagnoser when
-// DIAGNOSIS_SERVICE_URL is configured, or none (rule-table default) otherwise. Mirrors
-// loadScorer: the active diagnosis path is always logged, never a mystery. Note the LLM
-// diagnoser still falls back to the rule table per-call if the service is unreachable — so a
-// configured-but-down service degrades gracefully rather than failing decisions.
 func loadDiagnoserOpts(cfg config.Config, logger *slog.Logger) []pipeline.Option {
 	if cfg.DiagnosisServiceURL == "" {
 		slog.Warn("DIAGNOSIS_SERVICE_URL not set: using deterministic rule-based diagnosis")
@@ -181,20 +210,31 @@ type healthResponse struct {
 	Status  string `json:"status"`
 	Service string `json:"service"`
 	Version string `json:"version"`
-	DB      string `json:"db"` // "ok" | "down" | "disabled"
+	DB      string `json:"db"`    // "ok" | "down" | "disabled"
+	Redis   string `json:"redis"` // "ok" | "down" | "disabled"
 }
 
-// healthHandler is a liveness probe: HTTP 200 whenever the process is serving. The db
-// field reports readiness of the durable store informationally (a down DB does not flip
-// liveness, so the compose healthcheck stays meaningful for process supervision).
-func healthHandler(cfg config.Config, database *sql.DB) http.HandlerFunc {
+func healthHandler(cfg config.Config, database *sql.DB, c cache.Cache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		dbState := dbStatus(r.Context(), database)
+		redisState := redisStatus(r.Context(), c)
+		metrics.SetDBUp(dbState == "ok")
+		metrics.SetRedisUp(redisState == "ok")
 		writeJSON(w, http.StatusOK, healthResponse{
-			Status:  "ok",
-			Service: cfg.ServiceName,
-			Version: cfg.Version,
-			DB:      dbStatus(r.Context(), database),
+			Status: "ok", Service: cfg.ServiceName, Version: cfg.Version, DB: dbState, Redis: redisState,
 		})
+	}
+}
+
+// readyHandler is a readiness probe: 200 only when the durable store is reachable (Redis being
+// down does not flip readiness — it is optional by design).
+func readyHandler(database *sql.DB, c cache.Cache) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if database == nil || dbStatus(r.Context(), database) != "ok" {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "db": dbStatus(r.Context(), database)})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready", "db": "ok", "redis": redisStatus(r.Context(), c)})
 	}
 }
 
@@ -210,12 +250,28 @@ func dbStatus(ctx context.Context, database *sql.DB) string {
 	return "ok"
 }
 
+func redisStatus(ctx context.Context, c cache.Cache) string {
+	if c == nil || !c.Available() {
+		if c == nil {
+			return "disabled"
+		}
+		// Distinguish unconfigured (Noop) from configured-but-down.
+		if _, isNoop := c.(cache.Noop); isNoop {
+			return "disabled"
+		}
+		return "down"
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	defer cancel()
+	if err := c.Ping(pingCtx); err != nil {
+		return "down"
+	}
+	return "ok"
+}
+
 func versionHandler(cfg config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{
-			"service": cfg.ServiceName,
-			"version": cfg.Version,
-		})
+		writeJSON(w, http.StatusOK, map[string]string{"service": cfg.ServiceName, "version": cfg.Version})
 	}
 }
 
@@ -225,14 +281,24 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// statusRecorder captures the response status for logging + metrics.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
 func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		logger.Info("request",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"dur_ms", time.Since(start).Milliseconds(),
-		)
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		dur := time.Since(start)
+		metrics.ObserveHTTP(r.Method, rec.status, dur.Seconds())
+		logger.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status, "dur_ms", dur.Milliseconds())
 	})
 }
