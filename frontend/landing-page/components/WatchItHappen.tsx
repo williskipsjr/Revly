@@ -1,18 +1,27 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { checkBackendHealth, ingestPaymentFailed, HealthStatus, PaymentEventPayload } from "@/lib/api";
 
 export default function WatchItHappen() {
   const [step, setStep] = useState(0); // 0 to 4
   const [isPlaying, setIsPlaying] = useState(true);
+  const [backendStatus, setBackendStatus] = useState<HealthStatus | null>(null);
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [customLog, setCustomLog] = useState<string | null>(null);
 
-  const steps = [
+  const baseSteps = [
     { label: "INGEST", time: "t+00s", pty: "rzp_webhook: payment.failed id=pay_9924k amount=₹8,499.00", signal: 12, status: "INGESTION_ACTIVE" },
     { label: "DIAGNOSE", time: "t+45s", pty: "enrich context: history_success=0.99 prior_attempts=0 issuer_err=504", signal: 45, status: "CONTEXT_ATTACHED" },
     { label: "SCORE", time: "t+90s", pty: "ml_model.score: p(retry)=0.89 p(link)=0.74 p(remind)=0.61", signal: 68, status: "ML_SCORED" },
     { label: "GATE", time: "t+140s", pty: "policy.eval: max_retries=0/2 cooldown=valid -> ALLOW", signal: 82, status: "POLICY_APPROVED" },
     { label: "RECOVER", time: "t+195s", pty: "executor.dispatch: key=IDEMP-RV-99214 status=CAPTURED +₹8,499", signal: 98, status: "BOUNDED_SETTLED" },
   ];
+
+  // Poll or check backend health once on mount
+  useEffect(() => {
+    checkBackendHealth().then(setBackendStatus);
+  }, []);
 
   useEffect(() => {
     if (!isPlaying) return;
@@ -22,8 +31,42 @@ export default function WatchItHappen() {
     return () => clearInterval(interval);
   }, [isPlaying]);
 
-  const active = steps[step];
+  const active = baseSteps[step];
   const isPostThreshold = active.signal >= 70;
+
+  // Real Webhook Ingestion Trigger according to API Contracts
+  const handleTriggerWebhook = async () => {
+    setIsSimulating(true);
+    setIsPlaying(false);
+    setStep(0);
+    setCustomLog("POST /v1/merchants/merch_aggressive/events/payment-failed ...");
+
+    const payload: PaymentEventPayload = {
+      schema_version: "0.1.0",
+      external_event_id: `evt_demo_${Date.now()}`,
+      merchant_id: "merch_aggressive",
+      payment_id: `pay_${Math.floor(10000 + Math.random() * 90000)}`,
+      customer_id: "cust_demo_88",
+      event_type: "payment.failed",
+      amount: 849900, // 8499 INR in paise
+      currency: "INR",
+      method: "card",
+      failure_reason: "Issuer declined (504 Gateway Timeout)",
+      prior_attempts: 0,
+      occurred_at: new Date().toISOString(),
+    };
+
+    const res = await ingestPaymentFailed(payload);
+    setIsSimulating(false);
+
+    if (res && res.status === "ingested") {
+      setCustomLog(`HTTP 201: status=ingested id=${res.payment_event_id.slice(0, 8)}... duplicate=${res.duplicate}`);
+      setStep(4);
+    } else {
+      setCustomLog(`SIMULATED: event=${payload.external_event_id} -> ERV ranked +₹7,557 [idempotency locked]`);
+      setStep(4);
+    }
+  };
 
   return (
     <section id="watch" className="flex flex-col items-center px-gutter pb-[100px] lg:pb-[180px]">
@@ -31,21 +74,47 @@ export default function WatchItHappen() {
         <div className="relative mx-auto flex w-full max-w-[1445px] flex-col gap-[60px]">
           {/* Section Header */}
           <div className="flex flex-col gap-[30px] lg:flex-row lg:items-end lg:justify-between">
-            <h2 className="t-h2 max-w-[15ch] text-white">
-              Watch it happen.
-            </h2>
-            <p className="t-body max-w-[52ch] text-white/50">
-              One recorded payment failure, replayed against the live scoring rule. The commands,
-              the weights and the moment the ERV crosses T are all read from the model. The playback
-              only controls when each observation appears. Watch the right-hand column at the crossing:
-              the decision swaps from naive retry to optimal bounded recovery, and nothing about the
-              customer session drops.
-            </p>
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center gap-3">
+                <span className={`inline-block size-2 rounded-full ${backendStatus?.ok ? "bg-lime animate-pulse" : "bg-white/40"}`} />
+                <span className="font-mono text-[11.5px] uppercase tracking-[0.16em] text-white/50">
+                  {backendStatus?.ok ? "LIVE BACKEND ATTACHED (:8080)" : "DETERMINISTIC SIMULATION HARNESS"}
+                </span>
+              </div>
+              <h2 className="t-h2 max-w-[15ch] text-white">
+                Watch it happen.
+              </h2>
+            </div>
+            <div className="flex flex-col gap-4">
+              <p className="t-body max-w-[52ch] text-white/50">
+                One recorded payment failure, replayed against the live scoring rule. The commands,
+                the weights and the moment the ERV crosses T are all read from the model.
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleTriggerWebhook}
+                  disabled={isSimulating}
+                  className="inline-flex items-center gap-2 rounded-pill bg-white/[0.08] hover:bg-white/[0.14] border border-white/10 px-4 py-2 text-xs font-mono text-white transition-all duration-300 hover:-translate-y-0.5"
+                >
+                  <span className="size-1.5 rounded-full bg-lime" />
+                  <span>{isSimulating ? "Ingesting Webhook..." : "Trigger Live Ingestion Webhook"}</span>
+                </button>
+                <a
+                  href="http://localhost:3000"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 font-mono text-xs text-lime hover:underline"
+                >
+                  <span>Open Merchant Console</span>
+                  <span>→</span>
+                </a>
+              </div>
+            </div>
           </div>
 
           {/* Stepper Chips with connectors */}
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            {steps.map((s, idx) => {
+            {baseSteps.map((s, idx) => {
               const isActive = idx === step;
               const isPast = idx <= step;
               return (
@@ -89,13 +158,20 @@ export default function WatchItHappen() {
 
               {/* Terminal Logs Stream */}
               <div className="flex h-[290px] flex-col justify-end gap-2 overflow-hidden font-mono text-[13px] bg-black/40 p-4 rounded-inner border border-white/[0.04]">
-                {steps.slice(0, step + 1).map((log, idx) => (
+                {baseSteps.slice(0, step + 1).map((log, idx) => (
                   <div key={idx} className="flex items-baseline gap-3 transition-all duration-300">
                     <span className="w-[38px] shrink-0 text-white/30 text-[11.5px]">{log.time}</span>
                     <span className="text-lime">$</span>
                     <span className="min-w-0 flex-1 truncate text-white/80">{log.pty}</span>
                   </div>
                 ))}
+                {customLog && (
+                  <div className="flex items-baseline gap-3 text-lime font-bold">
+                    <span className="w-[38px] shrink-0 text-lime/60 text-[11.5px]">live</span>
+                    <span className="text-lime">&gt;</span>
+                    <span className="min-w-0 flex-1 truncate">{customLog}</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -191,4 +267,3 @@ export default function WatchItHappen() {
     </section>
   );
 }
-
