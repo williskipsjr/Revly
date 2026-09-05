@@ -1,0 +1,4 @@
+# Generated at runtime by run_simulation.py / report.py — not committed.
+datasets/
+results/
+__pycache__/
