@@ -20,6 +20,7 @@ type fakeRepo struct {
 	loadErr     error
 	decision    *DecisionRecord
 	execution   *ExecutionRecord
+	pending     *PendingActionRecord
 	execCreated bool
 }
 
@@ -35,6 +36,11 @@ func (f *fakeRepo) PersistDecision(_ context.Context, rec DecisionRecord) (strin
 func (f *fakeRepo) FinalizeExecution(_ context.Context, rec ExecutionRecord) (bool, error) {
 	f.execution = &rec
 	return f.execCreated, nil
+}
+
+func (f *fakeRepo) RecordPendingAction(_ context.Context, rec PendingActionRecord) (bool, error) {
+	f.pending = &rec
+	return true, nil
 }
 
 // baseContext is a healthy merchant/payment with full action-cost config.

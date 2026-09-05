@@ -29,6 +29,22 @@ type Dispatcher interface {
 	Dispatch(ctx context.Context, action domain.Action, amount int64, idempotencyKey string) (Outcome, error)
 }
 
+// StatusResolver resolves the true outcome of an action that was left in pending_confirmation
+// (an ambiguous external response, e.g. a timeout after send). The Phase-6 reconciler calls it
+// to settle such actions without ever blindly re-dispatching them (PLAN.md §8/§12). Both the
+// MockDispatcher and the Razorpay dispatcher implement it, so reconciliation works in demo and
+// sandbox modes alike.
+type StatusResolver interface {
+	Resolve(ctx context.Context, action domain.Action, amount int64, externalRef string) (Outcome, error)
+}
+
+// Resolve settles a pending_confirmation action deterministically for the mock: charge/
+// re-presentment actions are treated as recovered, out-of-band actions as dispatched-not-
+// recovered. It mirrors Dispatch so a mock timeout reconciles to a consistent final state.
+func (m MockDispatcher) Resolve(ctx context.Context, action domain.Action, amount int64, externalRef string) (Outcome, error) {
+	return m.Dispatch(ctx, action, amount, externalRef)
+}
+
 // MockDispatcher simulates external action execution with NO real network/API call
 // (PLAN.md §15). It is deterministic so the vertical slice is reproducible in tests and
 // demos: charge/re-presentment actions "recover" the payment; out-of-band actions (notify,

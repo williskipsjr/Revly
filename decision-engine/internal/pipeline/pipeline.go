@@ -23,6 +23,7 @@ import (
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/domain"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/erv"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/executor"
+	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/metrics"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/policy"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/recovery"
 	"github.com/williskipsjr/razorpay-ai-buildathon/decision-engine/internal/successmodel"
@@ -140,6 +141,22 @@ type ExecutionRecord struct {
 	StateHistory []domain.RecoveryState
 }
 
+// PendingActionRecord is a dispatched action whose external outcome is ambiguous (Phase 6):
+// it is persisted at status pending_confirmation with recovery_state ACTION_PENDING and NO
+// outcome row, to be settled later by the reconciler — never blind-retried (PLAN.md §8/§12).
+type PendingActionRecord struct {
+	DecisionID string
+	MerchantID string
+	PaymentID  string
+
+	Action                 domain.Action
+	IdempotencyKey         string
+	ExternalIdempotencyKey string
+
+	PendingState domain.RecoveryState   // ACTION_PENDING
+	StateHistory []domain.RecoveryState // visited path so far, for the audit trail
+}
+
 // Repository is the durable persistence boundary the pipeline depends on. internal/store
 // implements it against PostgreSQL; the idempotency guarantee lives in FinalizeExecution's
 // unique-key insert, not in the pipeline.
@@ -154,6 +171,10 @@ type Repository interface {
 	// and appends an audit entry. created reports whether this call inserted the action (true)
 	// or found an existing one (false) — the "no duplicate financial action" guarantee.
 	FinalizeExecution(ctx context.Context, rec ExecutionRecord) (created bool, err error)
+	// RecordPendingAction idempotently inserts an action at status pending_confirmation
+	// (unique idempotency_key), sets recovery_state to ACTION_PENDING, and audits it, WITHOUT
+	// writing an outcome — the ambiguous-outcome path settled later by the reconciler.
+	RecordPendingAction(ctx context.Context, rec PendingActionRecord) (created bool, err error)
 }
 
 // Runner executes the recovery pipeline. It satisfies ingest.Processor via Process.
@@ -244,6 +265,7 @@ func (r *Runner) Process(ctx context.Context, paymentEventID string) error {
 		PriorAttempts: c.PriorAttempts,
 	})
 	m.MustTo(domain.StateDiagnosed)
+	metrics.RecordDiagnosisSource(string(diag.Source)) // AI-availability signal (llm vs fallback)
 
 	effectiveAttempts := c.PriorAttempts + c.RetryActionsTaken
 
@@ -391,6 +413,7 @@ func (r *Runner) Process(ctx context.Context, paymentEventID string) error {
 	if err != nil {
 		return fmt.Errorf("pipeline: persist decision: %w", err)
 	}
+	metrics.RecordDecision(string(chosenPolicy.Decision)) // recovery-pipeline throughput by result
 	log.Info("decision persisted",
 		"decision_id", decisionID,
 		"root_cause", diag.RootCause,
@@ -416,6 +439,30 @@ func (r *Runner) Process(ctx context.Context, paymentEventID string) error {
 	out, err := r.dispatcher.Dispatch(ctx, chosenAction, c.Amount, key)
 	if err != nil {
 		return fmt.Errorf("pipeline: dispatch %s: %w", chosenAction, err)
+	}
+
+	// Ambiguous external outcome (Phase 6): the action was sent but its result is unknown (a
+	// timeout/5xx after send). Persist it as pending_confirmation at ACTION_PENDING and leave it
+	// for the reconciler to settle — NEVER fabricate a recovery or blindly re-dispatch (PLAN.md
+	// §8/§12). The state machine stays at ACTION_PENDING (a non-terminal state).
+	if out.Status == domain.ActionStatusPendingConfirmation {
+		created, perr := r.repo.RecordPendingAction(ctx, PendingActionRecord{
+			DecisionID:             decisionID,
+			MerchantID:             c.MerchantID,
+			PaymentID:              c.PaymentID,
+			Action:                 chosenAction,
+			IdempotencyKey:         key,
+			ExternalIdempotencyKey: out.ExternalRef,
+			PendingState:           domain.StateActionPending,
+			StateHistory:           m.History(),
+		})
+		if perr != nil {
+			return fmt.Errorf("pipeline: record pending action: %w", perr)
+		}
+		log.Info("recovery pipeline complete (pending confirmation)",
+			"decision_id", decisionID, "action", chosenAction,
+			"idempotent_new_action", created, "recovery_state", domain.StateActionPending)
+		return nil
 	}
 
 	if out.Recovered {

@@ -2,7 +2,9 @@
 // Kept stdlib-only. Phase 1 adds DATABASE_URL (durable store) and WEBHOOK_SECRET
 // (ingestion signature verification); Phase 3 adds SUCCESS_MODEL_PATH (the trained P(success)
 // artifact); Phase 4 adds DIAGNOSIS_SERVICE_URL + DIAGNOSIS_TIMEOUT_MS (the LLM diagnosis
-// gateway, with a bounded per-call timeout); REDIS_URL is wired in Phase 6.
+// gateway, with a bounded per-call timeout); Phase 6 adds REDIS_URL (ephemeral cooldown/rate
+// counters + job queue; never authoritative) and the optional RAZORPAY_* sandbox credentials;
+// Phase 7 adds API_KEY / ADMIN_API_KEY (public API auth).
 package config
 
 import (
@@ -42,11 +44,40 @@ type Config struct {
 	// the ingest handler's overall pipeline budget so a slow LLM degrades to rule-based rather
 	// than wedging ingestion. Sourced from DIAGNOSIS_TIMEOUT_MS (milliseconds).
 	DiagnosisTimeout time.Duration
+
+	// RedisURL is the Redis DSN for the Phase 6 ephemeral cooldown/rate-limit counters and job
+	// queue. Redis is NEVER authoritative (PLAN.md §13): when empty or unreachable, all checks
+	// fall back to the Postgres-derived facts, so correctness never depends on Redis being up.
+	RedisURL string
+
+	// ReconcileInterval is how often the background reconciler sweeps pending_confirmation
+	// actions (Phase 6). Zero disables the background loop (the endpoint still works on demand).
+	// Sourced from RECONCILE_INTERVAL_MS.
+	ReconcileInterval time.Duration
+
+	// Razorpay sandbox credentials (Phase 6). When RazorpayKeyID is set, the executor dispatches
+	// against the Razorpay sandbox with an external idempotency-key header; otherwise it uses the
+	// deterministic MockDispatcher (PLAN.md §15 MVP: notify/alt-method may be mocked).
+	RazorpayKeyID     string
+	RazorpayKeySecret string
+	RazorpayBaseURL   string
+
+	// APIKey gates the Phase 7 merchant-scoped public API (GET decisions/metrics/audit, POST
+	// override). When empty, API auth is disabled (dev convenience) and logged at startup.
+	APIKey string
+
+	// AdminAPIKey gates the admin-only Phase 7 endpoints (kill switch, policy-config). When
+	// empty, admin auth is disabled (dev convenience) and logged at startup.
+	AdminAPIKey string
 }
 
 // defaultDiagnosisTimeout is the per-call ceiling for the LLM diagnosis service when
 // DIAGNOSIS_TIMEOUT_MS is unset. Comfortably under the ingest pipeline's 15s budget.
 const defaultDiagnosisTimeout = 6 * time.Second
+
+// defaultReconcileInterval sweeps pending_confirmation actions periodically. Zero (unset)
+// disables the background loop.
+const defaultReconcileInterval = 0
 
 // Load reads configuration from environment variables, applying sane defaults.
 func Load() Config {
@@ -59,6 +90,13 @@ func Load() Config {
 		SuccessModelPath:    os.Getenv("SUCCESS_MODEL_PATH"),
 		DiagnosisServiceURL: os.Getenv("DIAGNOSIS_SERVICE_URL"),
 		DiagnosisTimeout:    getdurationMs("DIAGNOSIS_TIMEOUT_MS", defaultDiagnosisTimeout),
+		RedisURL:            os.Getenv("REDIS_URL"),
+		ReconcileInterval:   getdurationMs("RECONCILE_INTERVAL_MS", defaultReconcileInterval),
+		RazorpayKeyID:       os.Getenv("RAZORPAY_KEY_ID"),
+		RazorpayKeySecret:   os.Getenv("RAZORPAY_KEY_SECRET"),
+		RazorpayBaseURL:     getenv("RAZORPAY_BASE_URL", "https://api.razorpay.com"),
+		APIKey:              os.Getenv("API_KEY"),
+		AdminAPIKey:         os.Getenv("ADMIN_API_KEY"),
 	}
 }
 
