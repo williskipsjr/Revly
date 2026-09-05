@@ -1,0 +1,53 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "schemaVersion": 39,
+  "title": "Revenue Recovery — Engineering Telemetry",
+  "tags": ["decision-engine", "buildathon"],
+  "time": { "from": "now-30m", "to": "now" },
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Service Up",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [{ "expr": "decision_engine_up", "refId": "A" }]
+    },
+    {
+      "type": "stat",
+      "title": "DB Up",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [{ "expr": "decision_engine_db_up", "refId": "A" }]
+    },
+    {
+      "type": "stat",
+      "title": "Redis Up",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [{ "expr": "decision_engine_redis_up", "refId": "A" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Request rate (per method+code)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [{ "expr": "sum by (method,code) (rate(decision_engine_http_requests_total[1m]))", "refId": "A" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Request latency p95 (s)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le) (rate(decision_engine_http_request_duration_seconds_bucket[5m])))", "refId": "A" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Decisions by policy result",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [{ "expr": "sum by (result) (rate(decision_engine_decisions_total[5m]))", "refId": "A" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Diagnosis source (AI availability)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [{ "expr": "sum by (source) (rate(decision_engine_diagnoses_total[5m]))", "refId": "A" }]
+    }
+  ]
+}
